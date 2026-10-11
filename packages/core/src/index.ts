@@ -21,7 +21,7 @@ export {
   toCoreError,
 } from './errors.ts';
 export type { CoreError, ErrorCode } from './errors.ts';
-export { JsonObjectSchema, JsonValueSchema } from './json.ts';
+export { JSON_MAX_DEPTH, JSON_MAX_NODES, JsonObjectSchema, JsonValueSchema } from './json.ts';
 export type { JsonObject, JsonValue } from './json.ts';
 export { andThen, err, map, mapErr, ok, unwrapOr } from './result.ts';
 export type { Err, Ok, Result } from './result.ts';
