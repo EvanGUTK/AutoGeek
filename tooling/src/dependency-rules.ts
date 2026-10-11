@@ -47,6 +47,9 @@ function layerRule(name: PackageName): IForbiddenRuleType {
 
 /** The one file per package that is build configuration rather than product code. */
 const VITEST_CONFIG_FILE = '^(packages|apps)/[^/]+/vitest\\.config\\.ts$';
+/** The opt-in real-API smoke config, built only by tooling's smoke factory. */
+const VITEST_SMOKE_CONFIG_FILE = '^(packages|apps)/[^/]+/vitest\\.smoke\\.config\\.ts$';
+const TOOLING_SMOKE_ENTRY = '^tooling/src/vitest/smoke-config\\.ts$';
 /** tooling's public Vitest entry point (exported as `@autogeek/tooling/vitest`). */
 const TOOLING_VITEST_ENTRY = '^tooling/src/vitest/config\\.ts$';
 
@@ -89,9 +92,12 @@ export function createDependencyRuleSet(): IFlattenedRuleSet {
       {
         name: 'nothing-imports-tooling',
         comment:
-          'Product code must not depend on repo tooling. The only exception is a package-root file named exactly vitest.config.ts (see config-imports-only-tooling-entry).',
+          'Product code must not depend on repo tooling. The only exceptions are package-root files named exactly vitest.config.ts and vitest.smoke.config.ts (see config-imports-only-tooling-entry).',
         severity: 'error',
-        from: { path: '^(packages|apps)/', pathNot: VITEST_CONFIG_FILE },
+        from: {
+          path: '^(packages|apps)/',
+          pathNot: [VITEST_CONFIG_FILE, VITEST_SMOKE_CONFIG_FILE],
+        },
         to: { path: '^tooling/' },
       },
       {
@@ -103,12 +109,28 @@ export function createDependencyRuleSet(): IFlattenedRuleSet {
         to: { path: '^tooling/', pathNot: TOOLING_VITEST_ENTRY },
       },
       {
+        name: 'config-imports-only-tooling-entry',
+        comment:
+          'A package vitest.smoke.config.ts may import only the shared smoke entry point of tooling, never its internals or the plain test entry.',
+        severity: 'error',
+        from: { path: VITEST_SMOKE_CONFIG_FILE },
+        to: { path: '^tooling/', pathNot: TOOLING_SMOKE_ENTRY },
+      },
+      {
         name: 'nothing-imports-vitest-config',
         comment:
-          'vitest.config.ts may import tooling, so importing it from anywhere would reach tooling transitively. Nothing may depend on a vitest.config.ts.',
+          'vitest.config.ts and vitest.smoke.config.ts may import tooling, so importing them from anywhere would reach tooling transitively. Nothing may depend on a vitest config.',
         severity: 'error',
         from: {},
-        to: { path: '(^|/)vitest\\.config\\.ts$' },
+        to: { path: '(^|/)vitest(\\.smoke)?\\.config\\.ts$' },
+      },
+      {
+        name: 'nothing-imports-smoke',
+        comment:
+          'Smoke files run real APIs and must never be reachable from product code, unit tests or configs. Only other files in a smoke/ directory may import them.',
+        severity: 'error',
+        from: { pathNot: '(^|/)smoke/' },
+        to: { path: '(^|/)smoke/' },
       },
       {
         name: 'public-api-only',

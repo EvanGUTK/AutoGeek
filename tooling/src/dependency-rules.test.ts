@@ -464,3 +464,124 @@ describe('nothing may import a vitest.config.ts (it would reach tooling transiti
     expect(names(violations)).toContain('nothing-imports-vitest-config');
   });
 });
+
+describe('the smoke test config and smoke files', () => {
+  const names = (violations: string[]): string[] => violations.map((v) => v.split(':')[0] ?? '');
+  const smokeEntry = 'tooling/src/vitest/smoke-config.ts';
+  const testEntry = 'tooling/src/vitest/config.ts';
+
+  it.each(['packages/auth/vitest.smoke.config.ts', 'apps/desktop/vitest.smoke.config.ts'])(
+    'allows %s to import the tooling smoke entry point',
+    async (config) => {
+      const violations = await violationsFor({
+        [config]: importer(relative(dirname(config), smokeEntry)),
+        [smokeEntry]: exported,
+      });
+      expect(violations).toEqual([]);
+    },
+  );
+
+  it('allows the import through a workspace link when the entry is a package export', async () => {
+    await writeTree({
+      'packages/auth/package.json':
+        '{"name":"@autogeek/auth","devDependencies":{"@autogeek/tooling":"workspace:*"}}',
+      'packages/auth/vitest.smoke.config.ts':
+        "import { x } from '@autogeek/tooling/vitest-smoke';\nexport default x;\n",
+      'tooling/package.json':
+        '{"name":"@autogeek/tooling","exports":{"./vitest-smoke":"./src/vitest/smoke-config.ts"}}',
+      [smokeEntry]: exported,
+    });
+    await linkWorkspacePackage('packages/auth', '@autogeek/tooling', 'tooling');
+    expect(await violationsFor({})).toEqual([]);
+  });
+
+  it('keeps the two configs to their own entry points', async () => {
+    const smokeUsingTestEntry = await violationsFor({
+      'packages/auth/vitest.smoke.config.ts': importer('../../tooling/src/vitest/config.ts'),
+      [testEntry]: exported,
+    });
+    expect(names(smokeUsingTestEntry)).toContain('config-imports-only-tooling-entry');
+  });
+
+  it('forbids the plain vitest.config.ts from importing the smoke entry', async () => {
+    const violations = await violationsFor({
+      'packages/auth/vitest.config.ts': importer('../../tooling/src/vitest/smoke-config.ts'),
+      [smokeEntry]: exported,
+    });
+    expect(names(violations)).toContain('config-imports-only-tooling-entry');
+  });
+
+  it('forbids the smoke config from importing a tooling internal', async () => {
+    const violations = await violationsFor({
+      'packages/auth/vitest.smoke.config.ts': importer('../../tooling/src/eslint-config.ts'),
+      'tooling/src/eslint-config.ts': exported,
+    });
+    expect(names(violations)).toContain('config-imports-only-tooling-entry');
+  });
+
+  it.each([
+    'packages/auth/src/vitest.smoke.config.ts',
+    'packages/auth/vitest.smoke.config.mts',
+    'packages/auth/not-vitest.smoke.config.ts',
+  ])(
+    'only the exact file name qualifies for the exception: %s is still forbidden',
+    async (config) => {
+      const violations = await violationsFor({
+        [config]: importer(relative(dirname(config), smokeEntry)),
+        [smokeEntry]: exported,
+      });
+      expect(names(violations)).toContain('nothing-imports-tooling');
+    },
+  );
+
+  it('forbids product source from importing the smoke entry', async () => {
+    const violations = await violationsFor({
+      'packages/auth/src/index.ts': importer('../../../tooling/src/vitest/smoke-config.ts'),
+      [smokeEntry]: exported,
+    });
+    expect(names(violations)).toContain('nothing-imports-tooling');
+  });
+
+  it.each([
+    [
+      'product source of the same package',
+      'packages/auth/src/index.ts',
+      '../vitest.smoke.config.ts',
+    ],
+    [
+      'product source of another package',
+      'packages/agent/src/index.ts',
+      '../../auth/vitest.smoke.config.ts',
+    ],
+    ['another config file', 'packages/agent/vitest.config.ts', '../auth/vitest.smoke.config.ts'],
+  ])('forbids %s importing a smoke config', async (_name, from, specifier) => {
+    const violations = await violationsFor({
+      [from]: importer(specifier),
+      [join(dirname(from), specifier)]: exported,
+    });
+    expect(names(violations)).toContain('nothing-imports-vitest-config');
+  });
+
+  it.each([
+    ['product source', 'packages/auth/src/index.ts', '../smoke/live.smoke.ts'],
+    ['a unit test', 'packages/auth/src/index.test.ts', '../smoke/live.smoke.ts'],
+    ['another package', 'packages/agent/src/index.ts', '../../auth/smoke/live.smoke.ts'],
+    ['a vitest config', 'packages/auth/vitest.config.ts', './smoke/live.smoke.ts'],
+  ])('forbids %s importing a smoke file', async (_name, from, specifier) => {
+    const violations = await violationsFor({
+      [from]: importer(specifier),
+      [join(dirname(from), specifier)]: exported,
+    });
+    expect(names(violations)).toContain('nothing-imports-smoke');
+  });
+
+  it('lets a smoke file import product code and other smoke files of its own package', async () => {
+    const violations = await violationsFor({
+      'packages/auth/smoke/live.smoke.ts':
+        "import { x } from '../src/index.ts';\nimport { y } from './helpers.smoke.ts';\nexport const z = [x, y];\n",
+      'packages/auth/smoke/helpers.smoke.ts': 'export const y = 1;\n',
+      'packages/auth/src/index.ts': exported,
+    });
+    expect(violations).toEqual([]);
+  });
+});
