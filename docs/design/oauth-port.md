@@ -1,6 +1,6 @@
 # Design: `OAuthPort` — OAuth for remote MCP servers
 
-- **Status:** proposed (ag-auth). This is a design for review, not a decision; the chief signs off.
+- **Status:** proposed (ag-auth); the §4 address policy is a chief ruling (2026-10-11). This is a design for review, not a decision; the chief signs off.
   It gets discussed with ag-mcp when wave 3 starts.
 - **Context:** `mcp` needs OAuth for remote (streamable HTTP) servers, but it has no dependency edge
   to `auth` (ARCHITECTURE.md §4, LEARNINGS L-005). So `core` defines a port, `auth` implements it
@@ -88,10 +88,15 @@ to resolve.
    - Fetch Authorization Server Metadata. Require `issuer` to equal the issuer it was fetched
      for (RFC 8414 §3.3), `code_challenge_methods_supported` to include `S256`, and every
      endpoint to be https.
-2. **Client identity** **[verify: current MCP spec order of preference]**
-   - A pre-registered client id from config, else whatever the current spec prefers (Dynamic
-     Client Registration, RFC 7591, or a client-ID metadata document).
-   - The client id is stored per issuer and never shared across issuers.
+2. **Client identity: OPEN** **[verify]**. ag-mcp settles this at wave 3 by reading the current
+   MCP spec text and the installed SDK, not from memory. Whatever is chosen, the client id is
+   stored per issuer and never shared across issuers. The candidates and their tradeoffs:
+
+   | Mechanism | How it works | Security / product tradeoffs |
+   |---|---|---|
+   | Pre-registered client id | A client id per authorization server, from config | No runtime registration call (one less untrusted endpoint). Works only with authorization servers that have registered AutoGeek, and they must accept loopback redirect URIs with a variable port (RFC 8252 §7.3). |
+   | Dynamic Client Registration (RFC 7591) | Register at the server's `registration_endpoint` on first use | Works with any server that supports it. The registration endpoint is another untrusted URL, so the §4 address rules apply. Client metadata is unverified, so anyone can register a client named "AutoGeek", and consent screens must not be read as proof of identity. Registrations pile up server-side, one per install. |
+   | Client ID metadata document | The client id is an https URL whose JSON the authorization server fetches | Client identity is verifiable by the server. It needs a stable, AutoGeek-controlled https URL, which is hosted infrastructure that sits in tension with ARCHITECTURE.md's "no AutoGeek-hosted service" stance and needs a chief decision. **[verify]** whether, and how, the current spec defines it. |
 3. **Consent:** before opening the browser, main shows a native confirmation built from main's
    own data:
    - "<server display name> at <resource host> wants you to sign in at <issuer host>"
@@ -125,9 +130,21 @@ to resolve.
   - https only; no userinfo or fragment; redirects refused
   - body cap, timeout, and zod-validated schemas with the same total-parse rules as the token
     client
-  - **Open question for the chief:** whether to refuse private, loopback and link-local
-    addresses for discovery when the MCP server itself is public. Recommendation: refuse,
-    unless the address is the MCP server's own origin, and check after DNS resolution.
+  - **Address policy (chief ruling):** discovery, registration, token and revocation requests
+    refuse loopback, private (RFC 1918, IPv6 ULA `fc00::/7`), link-local and cloud-metadata
+    addresses. The one exception is the configured MCP server's **own origin**, which the user
+    explicitly added and confirmed.
+  - **Metadata addresses are refused even for the server's own origin:** `169.254.0.0/16`,
+    `fe80::/10` link-local, and known metadata endpoints such as `fd00:ec2::254`.
+  - **An authorization server on a different origin than the MCP server gets the full refusal**,
+    with no own-origin exception.
+  - **DNS is resolved once and the address is pinned for the connection.** After connecting, the
+    peer address is re-checked against the policy. This defeats DNS rebinding and
+    redirect-to-internal, together with the redirect refusal above.
+  - **Tests:** a rebinding fixture (a resolver that answers public first and private second) must
+    show the request refused. There are also cases for each refused range, IPv4-mapped IPv6
+    (`::ffff:10.0.0.1`), and the own-origin exception, which is allowed except for metadata
+    addresses.
 - **Issuer and resource binding:**
   - the `resource` check (RFC 9728 §3.3) and the `issuer` check (RFC 8414 §3.3) are mandatory
   - every token request carries `resource`
@@ -156,7 +173,6 @@ to resolve.
 
 ## 6. Open questions
 
-1. SSRF policy for private addresses during discovery (§4).
-2. **[verify]** The current MCP spec's preferred client-identity mechanism (§3.2).
-3. Whether `fetch` should also cover the SSE GET stream, or `mcp` opens it through the same call
+1. **[verify]** Client identity mechanism (§3.2): settled by ag-mcp at wave 3 from the spec text.
+2. Whether `fetch` should also cover the SSE GET stream, or `mcp` opens it through the same call
    (proposed: same call; the response body is a stream).
