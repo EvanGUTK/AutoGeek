@@ -356,3 +356,89 @@ describe('unknown workspace directories (fail closed)', () => {
     expect([...undeclaredPackages, ...undeclaredApps]).toEqual([]);
   });
 });
+
+describe('the vitest.config.ts exception for the shared test config', () => {
+  const entry = 'tooling/src/vitest/config.ts';
+  const internal = 'tooling/src/eslint-config.ts';
+  const names = (violations: string[]): string[] => violations.map((v) => v.split(':')[0] ?? '');
+
+  it.each(['packages/auth/vitest.config.ts', 'apps/desktop/vitest.config.ts'])(
+    'allows %s to import the tooling config entry point',
+    async (config) => {
+      const violations = await violationsFor({
+        [config]: importer(relative(dirname(config), entry)),
+        [entry]: exported,
+      });
+      expect(violations).toEqual([]);
+    },
+  );
+
+  it('still forbids a product source file importing the same entry point', async () => {
+    const violations = await violationsFor({
+      'packages/auth/src/index.ts': importer('../../../tooling/src/vitest/config.ts'),
+      [entry]: exported,
+    });
+    expect(names(violations)).toContain('nothing-imports-tooling');
+  });
+
+  it.each([
+    'packages/auth/src/vitest.config.ts',
+    'packages/auth/vite.config.ts',
+    'packages/auth/vitest.config.mts',
+    'packages/auth/not-vitest.config.ts',
+  ])('only the exact file name qualifies: %s is still forbidden', async (config) => {
+    const violations = await violationsFor({
+      [config]: importer(relative(dirname(config), entry)),
+      [entry]: exported,
+    });
+    expect(names(violations)).toContain('nothing-imports-tooling');
+  });
+
+  it('forbids a vitest.config.ts importing anything in tooling except the entry point', async () => {
+    const violations = await violationsFor({
+      'packages/auth/vitest.config.ts': importer('../../tooling/src/eslint-config.ts'),
+      [internal]: exported,
+    });
+    expect(names(violations)).toContain('config-imports-only-tooling-entry');
+  });
+
+  it('allows the import through a workspace link when the entry is a package export', async () => {
+    await writeTree({
+      'packages/auth/package.json':
+        '{"name":"@autogeek/auth","devDependencies":{"@autogeek/tooling":"workspace:*"}}',
+      'packages/auth/vitest.config.ts':
+        "import { x } from '@autogeek/tooling/vitest';\nexport default x;\n",
+      'tooling/package.json':
+        '{"name":"@autogeek/tooling","exports":{"./vitest":"./src/vitest/config.ts"}}',
+      [entry]: exported,
+    });
+    await linkWorkspacePackage('packages/auth', '@autogeek/tooling', 'tooling');
+    expect(await violationsFor({})).toEqual([]);
+  });
+
+  it('rejects the import through a workspace link when it reaches an internal file', async () => {
+    await writeTree({
+      'packages/auth/package.json':
+        '{"name":"@autogeek/auth","devDependencies":{"@autogeek/tooling":"workspace:*"}}',
+      'packages/auth/vitest.config.ts':
+        "import { x } from '@autogeek/tooling/internal';\nexport default x;\n",
+      'tooling/package.json':
+        '{"name":"@autogeek/tooling","exports":{"./internal":"./src/eslint-config.ts"}}',
+      [internal]: exported,
+    });
+    await linkWorkspacePackage('packages/auth', '@autogeek/tooling', 'tooling');
+    expect(names(await violationsFor({}))).toContain('config-imports-only-tooling-entry');
+  });
+
+  it('requires the devDependency: pnpm links only declared deps, so an undeclared import cannot resolve', async () => {
+    const violations = await violationsFor({
+      'packages/auth/package.json': '{"name":"@autogeek/auth"}',
+      'packages/auth/vitest.config.ts':
+        "import { x } from '@autogeek/tooling/vitest';\nexport default x;\n",
+      'tooling/package.json':
+        '{"name":"@autogeek/tooling","exports":{"./vitest":"./src/vitest/config.ts"}}',
+      [entry]: exported,
+    });
+    expect(names(violations)).toContain('not-to-unresolvable');
+  });
+});
