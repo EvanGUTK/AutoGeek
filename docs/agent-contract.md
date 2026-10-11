@@ -218,6 +218,16 @@ type ToolRejectReason =
   | 'unknown_tool' | 'not_in_mode' | 'invalid_input' | 'invalid_json' | 'loop_detected'
   | 'tool_disabled';                      // disabled for the session after a gate violation
 
+// [chief] The ONLY provider-error projection that leaves main (events, RunOutcome, IPC errors):
+// {kind, retryable, status?, retryAfterMs?, requestId?}. No `detail`, no vendor text. The display message
+// is derived from `kind` via core's constant table, never sent. `requestId` is schema-constrained
+// (≤128 chars, [A-Za-z0-9._:-], otherwise dropped). This is the same shape as CoreError.details for
+// domain 'provider' (see docs/model-contract.md and DECISIONS), so there is exactly one.
+interface ProviderErrorSafe {
+  kind: ProviderErrorKind; retryable: boolean;
+  status?: number; retryAfterMs?: number; requestId?: string;
+}
+
 type RunOutcome =
   | { reason: 'end_turn' }
   | { reason: 'plan_submitted' }
@@ -225,7 +235,7 @@ type RunOutcome =
   | { reason: 'budget'; budget: 'steps' | 'tokens' | 'time' | 'spend' }
   | { reason: 'max_tokens' }
   | { reason: 'refusal' }
-  | { reason: 'provider_error'; error: Omit<ProviderError, 'detail'> }
+  | { reason: 'provider_error'; error: ProviderErrorSafe }   // [chief] same shape on the wire as internally
   | { reason: 'loop_detected'; tool: string }
   | { reason: 'invalid_tool_calls' }
   | { reason: 'checkpoint_failed' }
