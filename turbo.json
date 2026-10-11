@@ -1,6 +1,8 @@
 {
   "$schema": "https://turborepo.dev/schema.json",
   "agentGuidance": false,
+  "cacheDir": ".turbo/cache",
+  "globalDependencies": ["tsconfig.base.json", ".npmrc", "pnpm-workspace.yaml"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
