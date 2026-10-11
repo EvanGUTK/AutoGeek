@@ -15,6 +15,9 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "@autogeek/tooling#test": {
+      "cache": false
+    },
     "dev": {
       "cache": false,
       "persistent": true
