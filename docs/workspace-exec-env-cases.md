@@ -36,7 +36,7 @@ inputs; no reading of `process.env`.
 | `TERM` | token | terminal capability hint; used to look up terminfo by name, so the value is restricted to the token rule (no path separators) |
 | `COLUMNS`, `LINES` | digits, at most 4 | output width; data only |
 | `LANG` | locale token | locale choice |
-| `LC_*` | locale token; the name must match `^LC_[A-Z_]+$` | locale categories. Safe because `LOCPATH` and `NLSPATH` are not allowlisted, so a value cannot point to attacker-controlled locale files |
+| `LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MESSAGES`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME`, `LC_PAPER`, `LC_NAME`, `LC_ADDRESS`, `LC_TELEPHONE`, `LC_MEASUREMENT`, `LC_IDENTIFICATION` | locale token | the standard locale categories, listed by name (no prefix rule, so the list fits core's exact-match `Set`). Safe because `LOCPATH` and `NLSPATH` are not allowlisted, so a value cannot point to attacker-controlled locale files |
 | `TZ` | token (`Europe/Berlin`, `UTC`) with no leading `:` or `/` | time zone name, not a file path |
 | `PYTHONUNBUFFERED`, `PYTHONDONTWRITEBYTECODE` | `0`/`1` | pure flags. Other `PYTHON*` names are not allowlisted: `PYTHONPATH` and `PYTHONSTARTUP` run code |
 | `RUST_BACKTRACE` | `0`/`1`/`full` | diagnostics output |
@@ -53,18 +53,26 @@ A key must match `^[A-Za-z_][A-Za-z0-9_]*$` and be at most 128 characters, else 
 rejects empty keys, keys with `=`, NUL, spaces, `.`, `-`, or any non-ASCII character before any
 other check runs.
 
+The allowlist is wired through core's `createAllowlistEnvKeyClassifier(list)`, which gives an
+`EnvKeyClassifier { isBenign(key) }`: case-sensitive exact match through a `Set` on every platform,
+and the factory rejects empty, over-long, NUL- or `=`-containing and prototype keys. That is the
+first gate. The value rules, the duplicate-key rule, and the reason codes below are a second layer
+in `classifyExecEnv`, which the tool uses to build each `EnvValue`. A value that fails its rule is
+treated as `redacted`, and any redacted or non-benign entry elevates the action in the gate.
+
 Matching is ASCII-only. Never call `toUpperCase()`/`toLowerCase()` on a key. Locale-sensitive
 folding maps non-ASCII characters onto ASCII ones (`'ı'.toUpperCase() === 'I'`, so a Turkish dotless
 i would turn `cı` into `CI`; `'ſ'` folds to `S`; the Kelvin sign U+212A folds to `k`). Because the
 key regex runs first, these keys are `invalid_key` and never reach a comparison.
 
-Platform rule:
-- **posix:** names are case-sensitive. `ci`, `Ci`, `node_env` are different variables, not on the
-  allowlist, so `unknown_key`. This fails closed even though `ci` is harmless to most tools.
-- **win32:** names are case-insensitive, so `Path`, `PATH` and `path` are one variable, and the
-  classifier folds ASCII only, for both allowlist lookup and the never-benign check. Two keys
-  that differ only in case (`Ci` and `CI`) make the effective value ambiguous: `duplicate_key`,
-  elevated. `Node_Options` is `interpreter_options`, not `unknown_key`. (`NodeOptions` without the underscore is a different variable and is `unknown_key`.)
+Platform rule (simplified after review with ag-agent): the allowlist is **case-sensitive on every
+platform**, because core's classifier is. On win32 `Ci` is the same variable as `CI` to the OS, but
+the classifier calls it `unknown_key`, so it is elevated. That fails closed and avoids a
+case-folding table. Two keys that differ only by ASCII case (`Ci` and `CI`) are `duplicate_key` on
+win32, since the OS would pick one of them. The never-benign table in §3 is matched
+case-insensitively (ASCII fold) on every platform, only to choose a reason code, so `Path` and
+`Node_Options` on win32 report `search_path` and `interpreter_options` instead of a plain
+`unknown_key`. (`NodeOptions` without the underscore is a different variable: `unknown_key`.)
 
 ## 3. Never benign (reason codes for the prompt)
 
@@ -94,6 +102,7 @@ unusual and still worth a prompt.
 | 4.2 | `{CI:'1'}` | all | benign |
 | 4.3 | `{CI:'1', NODE_ENV:'test', FORCE_COLOR:'1', NO_COLOR:'1', TERM:'xterm-256color', LANG:'en_US.UTF-8'}` | all | benign |
 | 4.4 | `{LC_ALL:'C'}`, `{LC_CTYPE:'en_US.UTF-8'}` | all | benign |
+| 4.4b | `{LC_FOO:'C'}` | all | `unknown_key` (only the listed categories) |
 | 4.5 | `{LC_:'C'}`, `{LC_all:'C'}`, `{LCALL:'C'}` | posix | `unknown_key` |
 | 4.6 | `{CI:'1', NODE_OPTIONS:'--require /tmp/x.js'}` | all | not benign; offending only `NODE_OPTIONS` (`interpreter_options`) |
 | 4.7 | `{node_options:'--require x'}` | posix | `interpreter_options` (never-benign table is case-insensitive) |
@@ -104,7 +113,7 @@ unusual and still worth a prompt.
 | 4.11 | `{Path:'C:\\x'}`, `{path:'x'}`, `{PATH:'x'}` | win32 | `search_path` for each |
 | 4.12 | `{Path:'x', PATH:'y'}` | win32 | `search_path` and `duplicate_key` |
 | 4.13 | `{Ci:'1'}` | posix | `unknown_key` |
-| 4.14 | `{Ci:'1'}` | win32 | benign (case-insensitive match of `CI`) |
+| 4.14 | `{Ci:'1'}` | win32 | `unknown_key` (case-sensitive allowlist, fails closed) |
 | 4.15 | `{CI:'1', Ci:'0'}` | win32 | `duplicate_key`, elevated |
 | 4.16 | `{CI:'1', Ci:'0'}` | posix | `unknown_key` for `Ci` (distinct variable), `CI` ok |
 | 4.17 | `{'cı':'1'}` (dotless i), `{'ſ':'x'}`, `{'\u212A':'x'}` (Kelvin sign) | all | `invalid_key` (non-ASCII), never matched to an ASCII name |
