@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -50,6 +50,17 @@ async function writeTree(files: Files): Promise<void> {
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
   }
+}
+
+/** Mimics pnpm's workspace linking: `<consumer>/node_modules/<name>` -> `<provider>`. */
+async function linkWorkspacePackage(
+  consumer: string,
+  name: string,
+  provider: string,
+): Promise<void> {
+  const linkPath = join(sandbox, consumer, 'node_modules', name);
+  await mkdir(dirname(linkPath), { recursive: true });
+  await symlink(relative(dirname(linkPath), join(sandbox, provider)), linkPath);
 }
 
 /**
@@ -245,5 +256,57 @@ describe('forbidden dependencies', () => {
       'packages/core/node_modules/fake-lib/index.js': 'exports.lib = 1;\n',
     });
     expect(violations.map((v) => v.split(':')[0])).toContain('no-undeclared-dependencies');
+  });
+});
+
+describe('circumventions of the dependency rules', () => {
+  const consumer = {
+    'packages/agent/package.json':
+      '{"name":"@autogeek/agent","dependencies":{"@autogeek/tools":"workspace:*"}}',
+    'packages/agent/src/index.ts': "import { x } from '@autogeek/tools';\nexport const y = x;\n",
+    'packages/tools/src/index.ts': 'export const x = 1;\n',
+    'packages/tools/dist/index.js': 'export const x = 1;\n',
+  };
+
+  it('an undeclared npm package whose entry point lives under dist/ is still reported', async () => {
+    const violations = await violationsFor({
+      'packages/core/package.json': '{"name":"@autogeek/core","dependencies":{}}',
+      'packages/core/src/index.ts': "import { lib } from 'fake-dist-lib';\nexport const y = lib;\n",
+      'packages/core/node_modules/fake-dist-lib/package.json':
+        '{"name":"fake-dist-lib","version":"1.0.0","main":"dist/index.js"}',
+      'packages/core/node_modules/fake-dist-lib/dist/index.js': 'exports.lib = 1;\n',
+    });
+    expect(violations.map((v) => v.split(':')[0])).toContain('no-undeclared-dependencies');
+  });
+
+  it('a bare @autogeek import through a workspace link is caught when exports point at src', async () => {
+    await writeTree({
+      ...consumer,
+      'packages/tools/package.json': '{"name":"@autogeek/tools","exports":{".":"./src/index.ts"}}',
+    });
+    await linkWorkspacePackage('packages/agent', '@autogeek/tools', 'packages/tools');
+    const violations = await violationsFor({});
+    expect(violations.map((v) => v.split(':')[0])).toContain('layer-violation-agent');
+  });
+
+  it('the same import is still caught when exports point at a build output under dist/', async () => {
+    await writeTree({
+      ...consumer,
+      'packages/tools/package.json':
+        '{"name":"@autogeek/tools","exports":{".":{"import":"./dist/index.js","types":"./dist/index.d.ts"}}}',
+    });
+    await linkWorkspacePackage('packages/agent', '@autogeek/tools', 'packages/tools');
+    const violations = await violationsFor({});
+    expect(violations.map((v) => v.split(':')[0])).toContain('layer-violation-agent');
+  });
+
+  it('build output inside a package is not crawled as source', async () => {
+    const violations = await violationsFor({
+      'packages/core/src/index.ts': exported,
+      'packages/core/dist/index.js':
+        "import { y } from '../../agent/src/index.ts';\nexport const x = y;\n",
+      'packages/agent/src/index.ts': exported,
+    });
+    expect(violations).toEqual([]);
   });
 });
