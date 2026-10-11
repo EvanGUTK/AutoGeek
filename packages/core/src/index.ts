@@ -2,10 +2,12 @@ export { abortReason } from './abort.ts';
 export { createEmitter } from './emitter.ts';
 export type { EmitterOptions, ListenOptions, TypedEmitter, Unsubscribe } from './emitter.ts';
 export {
+  IMAGE_MAX_BYTES,
   IMAGE_MEDIA_TYPES,
   ImageBlockSchema,
   ImageMediaTypeSchema,
   TextBlockSchema,
+  TOOL_OUTPUT_MAX_BYTES,
   ToolOutputSchema,
 } from './content.ts';
 export type { ImageBlock, ImageMediaType, TextBlock, ToolOutput } from './content.ts';
