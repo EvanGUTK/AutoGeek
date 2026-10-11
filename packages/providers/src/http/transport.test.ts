@@ -4,7 +4,7 @@ import { startFakeServer } from '../testing/http-server.ts';
 import type { FakeHandler, FakeServer } from '../testing/http-server.ts';
 import type { LogFields, Logger } from './logger.ts';
 import { DEFAULT_RETRY_POLICY } from './retry.ts';
-import { openStream } from './transport.ts';
+import { openStream, readText } from './transport.ts';
 import type { BodyRead, HttpRequest, StreamingResponse, TransportDeps } from './transport.ts';
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRET';
@@ -375,5 +375,31 @@ describe('openStream', () => {
     expect(logs.map((entry) => entry.fields?.['target'])).toEqual([`${fake.origin}/v1/messages`]);
     expect(JSON.stringify(logs)).not.toContain(SECRET);
     expect(logs.every((entry) => entry.level === 'debug')).toBe(true);
+  });
+
+  it('sends a GET when there is no body', async () => {
+    const fake = await serve((_req, res) => {
+      res.end('{"data":[]}');
+    });
+    const { deps } = harness();
+    const { providerId, url, headers, signal } = request(fake.origin);
+    const response = expectOk(await openStream({ providerId, url, headers, signal }, deps));
+    expect(expectOk(await readText(response, 'anthropic', 1024))).toBe('{"data":[]}');
+    expect(fake.requests[0]?.method).toBe('GET');
+    expect(fake.requests[0]?.body).toBe('');
+  });
+
+  it('readText rejects an oversized body and releases the connection', async () => {
+    const fake = await serve((_req, res) => {
+      res.writeHead(200);
+      res.write('x'.repeat(2048));
+    });
+    const { deps } = harness();
+    const response = expectOk(await openStream(request(fake.origin), deps));
+    expect(await readText(response, 'anthropic', 1024)).toEqual({
+      ok: false,
+      error: expect.objectContaining({ kind: 'invalid_response' }) as unknown,
+    });
+    await fake.waitForNoSockets();
   });
 });

@@ -33,8 +33,8 @@ export interface HttpRequest {
   readonly url: string;
   /** Built by the adapter, revealing the credential inline. Never logged. */
   readonly headers: Readonly<Record<string, string>>;
-  /** JSON request body. Contains user code: never logged. */
-  readonly body: string;
+  /** JSON request body, sent with POST; without one the request is a GET. Contains user code: never logged. */
+  readonly body?: string;
   readonly signal: AbortSignal;
   readonly timeouts?: TransportTimeouts;
   readonly retry?: RetryPolicy;
@@ -63,7 +63,7 @@ export interface StreamingResponse {
 const TIMEOUT = Symbol('transport-timeout');
 
 /**
- * POSTs `request` and returns the open 2xx response, retrying failures that happen before a
+ * Sends `request` (POST with a body, GET without) and returns the open 2xx response, retrying failures that happen before a
  * response is accepted (see `decideRetry`). Redirects are never followed: undici strips
  * `Authorization` on a cross-origin redirect but not `x-api-key` / `x-goog-api-key`, so any 3xx
  * is `invalid_response` and its body is discarded unread.
@@ -138,9 +138,9 @@ async function attemptOnce(
   let response: Response;
   try {
     response = await deps.fetch(request.url, {
-      method: 'POST',
+      method: request.body === undefined ? 'GET' : 'POST',
       headers: request.headers,
-      body: request.body,
+      ...(request.body === undefined ? {} : { body: request.body }),
       signal,
       redirect: 'manual',
     });
@@ -285,5 +285,30 @@ function describeUrl(url: string): string {
   } catch (cause) {
     if (cause instanceof TypeError) return '<invalid url>';
     throw cause;
+  }
+}
+
+/**
+ * Reads a whole 2xx body of at most `maxBytes` as text and releases the connection. Bigger bodies
+ * are `invalid_response`: listings are small, and an unbounded read is a memory hazard.
+ */
+export async function readText(
+  response: StreamingResponse,
+  providerId: string,
+  maxBytes: number,
+): Promise<Result<string, ProviderError>> {
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = '';
+  for (;;) {
+    const next = await response.read();
+    if (next.type === 'error') return err(next.error);
+    if (next.type === 'end') return ok(text + decoder.decode());
+    size += next.bytes.length;
+    if (size > maxBytes) {
+      await response.close();
+      return err(providerError('invalid_response', providerId));
+    }
+    text += decoder.decode(next.bytes, { stream: true });
   }
 }
