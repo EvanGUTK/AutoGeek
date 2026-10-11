@@ -268,18 +268,35 @@ an assumption; the UI renders what exists and omits what does not:
    always be present.
 2. `context: { providerId: string; modelId: string; credentialLabel: string }` — the header line
    "which key and model is this turn using". Label only, never key material.
-3. `write_file`: `operation: 'create' | 'modify' | 'delete'` and `resolvedPath` (real path after
-   symlink resolution) alongside the requested `path`, so a symlinked target is visible.
-4. `read_sensitive`: `reason: string` (which protected rule matched, e.g. "`.env`").
-5. `command`: `classification?: Array<'destructive' | 'network' | 'write' | 'unknown'>` as main
-   classified it, and `env?: Record<string, string>` for overrides main will actually apply (values
-   redacted by main if secret-shaped).
+3. `write_file`: `op: 'create' | 'modify' | 'delete' | 'rename'` plus `to?` for rename, and the
+   path is the `realpath` (after symlink resolution). If the tool also has the requested path, it is
+   shown alongside so a symlinked target is visible. (`fs_write{path, sensitive, op, to?}` in the
+   gate action, `ARCHITECTURE.md` §5 / D-006, already carries `op` and `to`.)
+4. `read_sensitive`: `reason: string` (which protected rule matched, e.g. "`.env`"); the gate
+   action's `sensitive` class is the source.
+5. `command`: both gate shapes reach the UI. `exec{argv, cwd, class}` is shown as the argv list, one
+   element per line with quoting made visible, plus its `class`; `exec_shell{command, cwd}` is shown
+   as the exact command string and is always class `unknown` (D-006). The UI's `kind: 'command'`
+   therefore needs a discriminator, e.g. `form: 'argv' | 'shell'`, rather than flattening argv into
+   a string the user would be reading differently from what runs. `env?: Record<string, string>` for
+   overrides main will actually apply (values redacted by main if secret-shaped).
 6. `network`: the URL is already normalized by main (the UI shows IDN/punycode both ways itself).
 7. `description?: string` — optional model-written text, shown only in the labeled, secondary
-   "Agent's description (not verified)" block. Never the basis for anything else.
+   "Agent's description (not verified)" block. Never the basis for anything else. The gate's
+   `literal` field is tool-built and is what the UI treats as the literal action.
+
+**Relation to `ARCHITECTURE.md` §5 / D-006.** The gate's `PermissionRequestInput.action`
+(`fs_read | fs_write | exec | exec_shell | network | mcp`) is what tools produce. The IPC
+`action` above is main's projection of it for display. They must stay isomorphic; ag-agent owns the
+mapping and the two unions should be defined together in `core`, so a new gate action cannot ship
+without a UI rendering (an unrecognized kind must fail closed to a labeled JSON view with Deny only,
+`docs/ui-spec.md` §5.2).
 
 ### Event `agent.approvalResolved`
 - Payload: `{ approvalId: string; outcome: 'allowed_once' | 'allowed_session' | 'denied' | 'cancelled' | 'timed_out' | 'run_stopped' }`.
+  Mapping from the gate's `PermissionDecision` (D-006): `deny` with reason `user` → `denied`,
+  `aborted` → `run_stopped` (or `cancelled`), `policy`/`mode`/`untrusted_workspace` never reach an
+  approval card because no human is asked.
 - Emitted for every approval, including ones resolved without the user (stop, timeout), so the card
   never goes stale.
 
@@ -300,7 +317,10 @@ an assumption; the UI renders what exists and omits what does not:
 
 ### `permissions.listRules` / `permissions.addRule` / `permissions.removeRule`
 - Backing the persistent-rules editor in Settings (brief item 7). Rules are exact rules, not
-  patterns, unless ag-agent specifies otherwise. **Shape to be defined by ag-agent**; ag-ui needs:
+  patterns, unless ag-agent specifies otherwise. Per `ARCHITECTURE.md` §5 remembered rules live
+  only in per-user app data, keyed by workspace-root realpath, and are never read from or written
+  to the workspace; the editor lists the rules for the current root. **Shape to be defined by
+  ag-agent**; ag-ui needs:
   list → `{ rules: Array<{ ruleId; toolName; action: ApprovalAction; createdAt }> }`, add →
   `{ toolName; action: ApprovalAction }` → `{ ruleId }`, remove → `{ ruleId }`. Errors: `not_found`,
   `invalid_input`. Persistent-rule creation from inside an approval prompt is deliberately not a

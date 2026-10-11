@@ -365,7 +365,10 @@ A prompt is one card (the **approval dock**, §5.5) containing, top to bottom:
    "1 of 3" is shown.
 2. **The literal action**, per tool kind, in `--ag-font-mono` / `mono-md`, in a bordered block with
    its own label. It is rendered as **text with visible escaping**, never interpreted:
-   - **Shell:** the exact command string and the exact cwd, plus any env overrides main reports. The
+   - **Shell (`exec_shell`, always "unknown" class):** the exact command string and the exact cwd, plus
+     any env overrides main reports. **Argv exec (`exec`):** the argv list, one element per line
+     with quoting visible (so a space inside an element is not mistaken for two arguments), plus its
+     class and cwd. The two forms are labeled differently and never flattened into each other. The
      command is shown in full: long commands wrap (no truncation, no ellipsis) and the block
      scrolls within a max height; line breaks and every `;`, `&&`, `|`, `$()`, backtick, redirect
      and heredoc are visible as written. Control characters, zero-width characters, bidirectional
