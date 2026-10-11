@@ -210,7 +210,12 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 - Each `seq` is the sequence of the latest event of its own stream reflected in that part. Main reads
   each state and its `seq` atomically (confirmed by ag-workspace).
 - The renderer keeps one `seq` per stream and applies a state or event only if its `seq` is higher
-  than the one it holds (`applyIfNewer`).
+  than the one it holds (`applyIfNewer`). The held `seq` for each stream starts at **-1**, so a first
+  `seq` of 0 is accepted. This is safe because ag-workspace's store keeps three invariants: every
+  change of root or trust bumps `seq` in the same synchronous step, `seq` is strictly monotonic per
+  process, and `getState` reads state and `seq` together. Equal `seq` then means equal state. A
+  property test of that (interleaved changes and reads) is ag-workspace's, and a root that vanishes
+  goes through the same store transition.
 
 ### Event `workspace.stateChanged`
 - Payload: `WorkspaceState` (`{ seq, root }`). Emitted whenever the open folder or its trust changes
