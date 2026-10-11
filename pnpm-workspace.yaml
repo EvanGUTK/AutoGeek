@@ -3,12 +3,20 @@ packages:
   - packages/*
   - tooling
 
+# Every third-party version lives here, exact. package.json files reference `catalog:`.
 catalog:
+  '@eslint/js': 10.0.1
   '@types/node': 24.19.2
   dependency-cruiser: 18.5.0
+  eslint: 10.12.0
+  prettier: 3.9.10
+  turbo: 2.11.7
   typescript: 6.0.3
+  typescript-eslint: 8.71.1
   vitest: 5.0.3
-  zod: 4.6.6
+  zod: 4.6.5
 
-minimumReleaseAgeExclude:
-  - zod@4.6.6
+# Supply-chain cooldown (ARCHITECTURE.md §8.8). Strict mode stops pnpm from silently adding
+# too-young releases to minimumReleaseAgeExclude. Any exclusion needs a DECISIONS entry and the
+# chief's approval (LEARNINGS L-002).
+minimumReleaseAgeStrict: true
