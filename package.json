@@ -11,9 +11,10 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "typecheck": "turbo run typecheck",
-    "lint": "pnpm lint:eslint && pnpm lint:format",
+    "lint": "pnpm lint:eslint && pnpm lint:format && pnpm lint:deps",
     "lint:eslint": "eslint . --max-warnings 0",
     "lint:format": "prettier --check .",
+    "lint:deps": "depcruise --config .dependency-cruiser.mjs apps packages tooling",
     "format": "prettier --write .",
     "test": "turbo run test",
     "verify": "pnpm typecheck && pnpm lint && pnpm test"
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@types/node": "^24.19.2",
+    "dependency-cruiser": "catalog:",
     "eslint": "10.12.0",
     "prettier": "3.9.10",
     "turbo": "2.11.7",
