@@ -128,6 +128,45 @@ function declaredLengthExceeds(response: FetchResponse, limit: number): boolean 
   return !Number.isSafeInteger(length) || length < 0 || length > limit;
 }
 
+interface BoundedReply {
+  readonly status: number;
+  readonly text: string;
+}
+
+/**
+ * POSTs a form to an https OAuth endpoint (redirects refused) and reads a bounded reply: a declared
+ * or actual body over the cap is `invalid_response`, a rejected fetch is `network` (or `aborted`).
+ */
+async function postForm(
+  endpoint: string,
+  params: Readonly<Record<string, string>>,
+  fetch: FetchLike,
+  signal: AbortSignal,
+): Promise<Result<BoundedReply, TokenError>> {
+  assertTokenEndpoint(endpoint);
+  let response: FetchResponse;
+  let text: string;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: new URLSearchParams(params).toString(),
+      signal,
+      redirect: 'error',
+    });
+    if (declaredLengthExceeds(response, MAX_BODY_CHARS)) return err({ kind: 'invalid_response' });
+    text = await response.text();
+  } catch (thrown) {
+    if (!(thrown instanceof Error)) throw thrown;
+    return err({ kind: signal.aborted ? 'aborted' : 'network' });
+  }
+  if (text.length > MAX_BODY_CHARS) return err({ kind: 'invalid_response' });
+  return ok({ status: response.status, text });
+}
+
 interface TokenRequest {
   readonly config: TokenEndpointConfig;
   readonly params: Readonly<Record<string, string>>;
@@ -138,29 +177,14 @@ interface TokenRequest {
 
 async function requestTokens(request: TokenRequest): Promise<Result<TokenSet, TokenError>> {
   const { config, params, fetch, signal, now } = request;
-  assertTokenEndpoint(config.tokenEndpoint);
-  let response: FetchResponse;
-  let text: string;
-  try {
-    response = await fetch(config.tokenEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-      },
-      body: new URLSearchParams({ ...params, client_id: config.clientId }).toString(),
-      signal,
-      redirect: 'error',
-    });
-    if (declaredLengthExceeds(response, MAX_BODY_CHARS)) return err({ kind: 'invalid_response' });
-    text = await response.text();
-  } catch (thrown) {
-    if (!(thrown instanceof Error)) throw thrown;
-    return err({ kind: signal.aborted ? 'aborted' : 'network' });
-  }
-  const receivedAt = now();
-  if (text.length > MAX_BODY_CHARS) return err({ kind: 'invalid_response' });
-  return interpretSafely(response.status, text, receivedAt);
+  const reply = await postForm(
+    config.tokenEndpoint,
+    { ...params, client_id: config.clientId },
+    fetch,
+    signal,
+  );
+  if (!reply.ok) return reply;
+  return interpretSafely(reply.value.status, reply.value.text, now());
 }
 
 export interface ExchangeCodeInput {
