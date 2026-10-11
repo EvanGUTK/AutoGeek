@@ -1,13 +1,7 @@
 import { REASONING_EFFORTS } from '@autogeek/core';
 import type { ReasoningEffort } from '../effort.ts';
-
-/** Integer micro-USD per million tokens (ModelInfo.pricing). */
-export interface Pricing {
-  readonly input: number;
-  readonly output: number;
-  readonly cacheRead?: number;
-  readonly cacheWrite?: number;
-}
+import { usdPerMTok } from '../pricing.ts';
+import type { Pricing } from '../pricing.ts';
 
 /**
  * What the adapter must know about a Claude model to build a valid request. Sources (verified
@@ -33,16 +27,10 @@ export interface AnthropicModelProfile {
 }
 
 const NO_XHIGH: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'max'];
-const M = 1_000_000;
 
-/** USD per MTok to integer micros; cache writes use the 5-minute rate (1.25x input). */
+/** Documented USD per MTok; cache writes use the 5-minute rate (1.25x input). */
 function price(input: number, output: number, cacheRead: number): Pricing {
-  return {
-    input: Math.round(input * M),
-    output: Math.round(output * M),
-    cacheRead: Math.round(cacheRead * M),
-    cacheWrite: Math.round(input * 1.25 * M),
-  };
+  return usdPerMTok({ input, output, cacheRead, cacheWrite: input * 1.25 });
 }
 
 function current(
