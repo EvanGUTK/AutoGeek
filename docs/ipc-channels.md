@@ -201,24 +201,29 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 - Errors: none beyond universal. New roots start untrusted until `workspace.setTrust`.
 
 ### `workspace.getState`
-- Input: `{}`. Output: `{ stateSeq: number; root: { name: string; trusted: boolean } | null; watch: WatchState }` where
-  `stateSeq` is the sequence of the latest `workspace.stateChanged` reflected in `root`, and
-  `WatchState = { seq: number } & ({ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' })`,
-  where `seq` is the sequence of the latest `workspace.fsWatchState` event reflected in `watch`. Main
-  reads each state and its sequence atomically (confirmed by ag-workspace).
+- Input: `{}`. Output: `{ workspace: WorkspaceState; watch: WatchState }`, which **mirrors the two
+  event payloads** so one `applyIfNewer` helper handles both streams:
+  - `WorkspaceState = { seq: number; root: { name: string; trusted: boolean } | null }`, the same shape
+    as the `workspace.stateChanged` payload.
+  - `WatchState = { seq: number } & ({ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' })`,
+    the same shape as the `workspace.fsWatchState` payload.
+- Each `seq` is the sequence of the latest event of its own stream reflected in that part. Main reads
+  each state and its `seq` atomically (confirmed by ag-workspace).
+- The renderer keeps one `seq` per stream and applies a state or event only if its `seq` is higher
+  than the one it holds (`applyIfNewer`).
 
 ### Event `workspace.stateChanged`
-- Payload: `{ seq: number; root: { name: string; trusted: boolean } | null }`. Emitted whenever the
-  open folder or its trust changes (`openFolder`, `setTrust`, closing the folder), so trust changes
-  have an event like everything else that is state. It is paired with `getState` the same way as the
-  other state events: subscribe and buffer, call `getState`, then apply buffered events whose `seq` is
-  above `stateSeq`. This also lets a second view stay consistent after the roles are split (D-010).
+- Payload: `WorkspaceState` (`{ seq, root }`). Emitted whenever the open folder or its trust changes
+  (`openFolder`, `setTrust`, closing the folder), so trust changes have an event like everything else
+  that is state. It is paired with `getState` the same way as the other state events: subscribe and
+  buffer, call `getState`, apply `workspace`, then apply buffered events through `applyIfNewer`. This
+  also lets a second view stay consistent after the roles are split (D-010).
   The event is approved by the chief and its shape is confirmed by ag-workspace. `stateChanged` and
-  `fsWatchState` each keep their own counter (`stateSeq` in `getState` belongs to the first,
-  `watch.seq` to the second), both per process and never reset when the root changes. An event is
-  emitted only on an actual change of root or trust, not when `setTrust` repeats the current value,
-  and a declined `setTrust(true)` (`user_declined`) emits nothing. The store lives in `workspace` and
-  desktop calls it from its `openFolder` and `setTrust` handlers, after the native dialogs.
+  `fsWatchState` each keep their own counter (`workspace.seq` and `watch.seq` in `getState`), both per
+  process and never reset when the root changes. An event is emitted only on an actual change of root
+  or trust, not when `setTrust` repeats the current value, and a declined `setTrust(true)`
+  (`user_declined`) emits nothing. The store lives in `workspace` and desktop calls it from its
+  `openFolder` and `setTrust` handlers, after the native dialogs.
 
 ### `workspace.setTrust`
 - Input: `{ trusted: boolean }` (applies to the current root, set only from the trust-prompt UI).
@@ -277,11 +282,12 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
     `.git/config`, `.git/hooks/**`, `.git/info/exclude`, `.git/info/attributes`, a submodule's
     `modules/*/config` and `modules/*/hooks/**`, and `worktrees/*/config.worktree`. A file named `.git`
     at any depth (a gitlink containing `gitdir:`) is confirmable for writes, and ordinary to read.
-  - **`.git` reads** are not default-deny. Reads of `.git/config`, `.git/config.worktree`,
-    `.git/FETCH_HEAD`, `.git/logs/**`, the `modules/*/config` and `worktrees/*/config.worktree`
-    files, and `.git-credentials` are sensitive and show the native dialog, because remote URLs often
-    hold tokens. Other reads under `.git/` (`refs`, `HEAD`, `packed-refs`, ...) are free and show no
-    dialog.
+  - **`.git` reads** are not default-deny. The credential-bearing reads (files that often hold remote
+    tokens, such as `.git/config`, `.git/FETCH_HEAD`, `.git/logs/**` and `.git-credentials`, and their
+    submodule and worktree counterparts) are sensitive and show the native dialog; other reads under
+    `.git/` (`refs`, `HEAD`, `packed-refs`, ...) are free. The authoritative list is
+    `docs/workspace-path-cases.md` §7.25–7.28, owned by ag-workspace; this document does not repeat
+    it.
   - AutoGeek's own configuration and credential store answer `outside_workspace`, so their existence
     is not confirmed. The editor explains a `protected_path` result in words and offers no way around
     it. (ag-workspace, `docs/workspace-path-cases.md` §7; confirmed by the chief.)
