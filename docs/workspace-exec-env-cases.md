@@ -17,12 +17,12 @@ classifyExecEnv(env: Record<string, string>, platform: NodeJS.Platform):
   | { outcome: 'elevate'; offending: Array<{ key: string; reason: ElevateReason }> }
 type RefuseReason = 'invalid_key' | 'invalid_value' | 'duplicate_key'
 type ElevateReason = 'loader_injection' | 'interpreter_options' | 'search_path' | 'git' | 'proxy'
-  | 'credential_shaped' | 'unknown_key'
+  | 'credential_shaped' | 'credential_access' | 'unknown_key'
 ```
 
 Three outcomes (settled with ag-agent):
 - **refuse:** the env is malformed, meaning a bad key, a value that fails its rule on an allowlisted
-  key, or a win32 case-duplicate. The tool returns a typed error result to the model **before any
+  key, a value containing NUL or longer than 32 KiB on ANY key, or a win32 case-duplicate. The tool returns a typed error result to the model **before any
   gate check**, with a precise message such as `env NODE_ENV: value rejected (reason:
   invalid_value); run without it or use a plain value`. No prompt, no effect, and the model can
   correct itself. This fails closed.
@@ -50,7 +50,7 @@ function of its inputs; no reading of `process.env`.
 | `COLUMNS`, `LINES` | digits, at most 4 | output width; data only |
 | `LANG` | locale token | locale choice |
 | `LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MESSAGES`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME`, `LC_PAPER`, `LC_NAME`, `LC_ADDRESS`, `LC_TELEPHONE`, `LC_MEASUREMENT`, `LC_IDENTIFICATION` | locale token | the standard locale categories, listed by name (no prefix rule, so the list fits core's exact-match `Set`). Safe because `LOCPATH` and `NLSPATH` are not allowlisted, so a value cannot point to attacker-controlled locale files |
-| `TZ` | token (`Europe/Berlin`, `UTC`) with no leading `:` or `/` | time zone name, not a file path |
+| `TZ` | its own rule, not `token`: an IANA name `^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$` (`UTC`, `Europe/Berlin`, `America/Argentina/Buenos_Aires`; no `.` segments, no leading `/` or `:`), or a POSIX TZ string `^[A-Za-z]{3,6}[+-]?[0-9]{1,2}(:[0-9]{2})?([A-Za-z]{3,6})?$` | time zone name, never a file path: `TZ=../../tmp/x` would make libc load an arbitrary tzfile, a known parser attack surface |
 | `PYTHONUNBUFFERED`, `PYTHONDONTWRITEBYTECODE` | `0`/`1` | pure flags. Other `PYTHON*` names are not allowlisted: `PYTHONPATH` and `PYTHONSTARTUP` run code |
 | `RUST_BACKTRACE` | `0`/`1`/`full` | diagnostics output |
 
@@ -105,7 +105,9 @@ unusual and still worth a prompt.
 | `RUBYOPT`, `RUBYLIB`, `PERL5OPT`, `PERL5LIB`, `PERLLIB` | `interpreter_options` | `-r`/`-M` flags load code |
 | `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `CLASSPATH` | `interpreter_options` | agent and classpath injection |
 | `*_PROXY`, `*_proxy`, `NO_PROXY`, `ALL_PROXY` | `proxy` | redirects network traffic through an attacker host and can expose credentials |
-| `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD`, `*_PASSWD`, `*_CREDENTIALS`, `*_AUTH`, `AWS_*`, `GOOGLE_APPLICATION_CREDENTIALS`, `NPM_CONFIG_*`, `SSH_AUTH_SOCK` | `credential_shaped` | smuggles or redirects credentials; the value is always redacted |
+| `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD`, `*_PASSWD`, `*_CREDENTIALS`, `*_AUTH`, `AWS_*`, `GOOGLE_APPLICATION_CREDENTIALS`, and `NPM_CONFIG_*` names that carry auth (`*_auth*`, `*authToken*`, case-insensitive) | `credential_shaped` | smuggles or redirects credentials; the value is always redacted |
+| `NPM_CONFIG_*` / `npm_config_*` (all other names) | `interpreter_options` | `npm_config_script_shell`, `npm_config_node_options` and `npm_config_ignore_scripts=false` change what runs, so the value is shown plain, never redacted (reviewer W5) |
+| `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` | `credential_access` | a socket path, not a secret: grants use of keys without exposing them; shown plain |
 | anything else not on the allowlist | `unknown_key` | default deny |
 
 ## 4. Test table (each row is a table-driven case)
@@ -138,12 +140,15 @@ unusual and still worth a prompt.
 | 4.22 | `{PYTHONPATH:'x'}`, `{PYTHONSTARTUP:'x'}`, `{PYTHONHOME:'x'}`, `{PYTHONWARNINGS:'x'}` | all | `interpreter_options` |
 | 4.23 | `{PYTHONUNBUFFERED:'1'}` | all | benign |
 | 4.24 | `{RUBYOPT:'-rx'}`, `{PERL5OPT:'-Mx'}`, `{JAVA_TOOL_OPTIONS:'-javaagent:x'}`, `{_JAVA_OPTIONS:'x'}` | all | `interpreter_options` |
-| 4.25 | `{HTTP_PROXY:'x'}`, `{https_proxy:'x'}`, `{ALL_PROXY:'x'}`, `{NO_PROXY:'x'}`, `{npm_config_proxy:'x'}` | all | `proxy` (the last also matches `NPM_CONFIG_*`; the first matching row wins and is documented in the test) |
-| 4.26 | `{GITHUB_TOKEN:'x'}`, `{MY_API_KEY:'x'}`, `{DB_PASSWORD:'x'}`, `{AWS_ACCESS_KEY_ID:'x'}`, `{SSH_AUTH_SOCK:'x'}` | all | `credential_shaped`; the values are `redacted` |
+| 4.25 | `{HTTP_PROXY:'x'}`, `{https_proxy:'x'}`, `{ALL_PROXY:'x'}`, `{NO_PROXY:'x'}`, `{npm_config_proxy:'x'}` | all | `proxy` for all five (`proxy` is checked before the `NPM_CONFIG_*` row, and the order is fixed in the test) |
+| 4.26 | `{GITHUB_TOKEN:'x'}`, `{MY_API_KEY:'x'}`, `{DB_PASSWORD:'x'}`, `{AWS_ACCESS_KEY_ID:'x'}`, `{npm_config__authToken:'x'}`, `{NPM_CONFIG__AUTH:'x'}` | all | `credential_shaped`; the values are `redacted` |
+| 4.26b | `{SSH_AUTH_SOCK:'/tmp/agent'}`, `{npm_config_script_shell:'/tmp/sh'}`, `{npm_config_node_options:'--require x'}`, `{npm_config_ignore_scripts:'false'}` | all | elevated with reason `credential_access` / `interpreter_options`; the values are `plain` and shown literally |
 | 4.27 | `{NODE_ENV:'test; rm -rf /'}`, `{NODE_ENV:'a b'}`, `{NODE_ENV:'$(x)'}`, `{NODE_ENV:'a\nb'}` | all | refused: `invalid_value` |
 | 4.28 | `{NODE_ENV:''}` | all | benign (the empty value is a valid token) |
 | 4.29 | `{NODE_ENV: 'x'.repeat(65)}` | all | refused: `invalid_value` |
-| 4.30 | `{TERM:'../../x'}`, `{TZ:'/etc/passwd'}`, `{TZ:':/x'}` | all | refused: `invalid_value` |
+| 4.30 | `{TERM:'../../x'}`, `{TZ:'/etc/passwd'}`, `{TZ:':/x'}`, `{TZ:'../x'}`, `{TZ:'Europe/../x'}`, `{TZ:'a/b/c/d'}` | all | refused: `invalid_value` |
+| 4.30b | `{TZ:'UTC'}`, `{TZ:'Europe/Berlin'}`, `{TZ:'America/Argentina/Buenos_Aires'}`, `{TZ:'EST5EDT'}`, `{TZ:'CET-1'}` | all | benign |
+| 4.30c | a value containing NUL, or longer than 32 KiB, on ANY key (allowlisted, elevated or unknown) | all | refused: `invalid_value` before the gate (Node rejects NUL in env values at spawn, and an unbounded value would bloat the prompt) |
 | 4.31 | `{FORCE_COLOR:'9'}`, `{COLUMNS:'abc'}`, `{COLUMNS:'12345'}` | all | refused: `invalid_value` |
 | 4.32 | `{CI:'1', FOO:'x'}` | all | not benign; `FOO` is `unknown_key`; `CI` is not listed as offending |
 | 4.33 | mixed: one benign key and one `GIT_DIR` | all | not benign for the whole request |
@@ -155,11 +160,11 @@ unusual and still worth a prompt.
 | 4.38b | refusal harness: for every `refuse` row (4.12, 4.15, 4.17-4.19, 4.27-4.31), the conformance harness asserts the tool returns an error result, makes **zero** gate calls and causes **zero** effects, and the message names the key and reason code | all | holds |
 | 4.38c | an `invalid_value` on an allowlisted key is refused even when another key is elevated; refusal is decided first | all | holds |
 | 4.39 | `exec_shell` requests are always class `unknown` and always ask, so the env result adds a reason but never lowers the class | all | holds |
-| 4.40 | the allowlist and the never-benign table contain no key that the other table also matches differently (a test checks the two tables are disjoint) | all | holds |
+| 4.40 | the allowlist and the never-benign table are disjoint, with one stated exemption: the two allowlisted names `PYTHONUNBUFFERED` and `PYTHONDONTWRITEBYTECODE` are exempt from the `PYTHON*` pattern (a test asserts exactly these two exemptions and no others) | all | holds |
 | 4.41 | no-drift: `createAllowlistEnvKeyClassifier(BENIGN_ENV_KEYS)` does not throw | all | holds (core cannot import this package, so this test lives here, next to the list) |
 | 4.42 | no-drift: every key in `BENIGN_ENV_KEYS` has `isBenign(key) === true` on the exported classifier, so the factory dropped nothing | all | holds |
 | 4.43 | the exported classifier is the factory's output: the module builds it through an injectable factory parameter, and a test passes a spy factory and asserts the exported classifier is exactly what the spy returned (a hand-written `isBenign` fails); a behavioral check also asserts `isBenign('__proto__')`, `isBenign('constructor')` and `isBenign('')` are false | all | holds |
-| 4.44 | `BENIGN_ENV_KEYS` has no duplicates, every entry matches `^[A-Za-z_][A-Za-z0-9_]*$`, and none matches the never-benign table in §3 | all | holds |
+| 4.44 | `BENIGN_ENV_KEYS` has no duplicates, every entry matches `^[A-Za-z_][A-Za-z0-9_]*$`, and none matches the never-benign table in §3 apart from the two `PYTHON*` exemptions in 4.40 | all | holds |
 
 The platform argument is passed explicitly in every test so the win32 rows run on macOS and Linux
 CI.
