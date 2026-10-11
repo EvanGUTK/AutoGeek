@@ -2,13 +2,16 @@
 
 Owner of this document: ag-ui. **This is a request, not a contract.** `ag-foundation` owns the IPC
 contract *format* in `@autogeek/core`. Each domain owner adds its own channels there; nobody edits
-another owner's channels. The channel list below needs the chief's sign-off before anyone codes
-against it. Until the real handlers exist, the renderer is built against a mock of exactly the
+another owner's channels. The channel list is signed off by the chief; each owner still
+confirms their group's shapes. Until the real handlers exist, the renderer is built against a mock of exactly the
 client shape in §1.2, at the bridge boundary.
 
 Derived from `docs/ui-spec.md` and `docs/briefs/ui.md`, under the constraints the chief set:
-errors are values, streams are events, `credentials.add` is the only channel that carries a secret,
-and no channel ever returns one.
+errors are values, streams are events, exactly two channels (`auth.addApiKey`, `auth.rotateApiKey`)
+carry a secret, and no channel ever returns one.
+
+Status: channel list signed off by the chief (2026-10-11) with amendments, applied below. Each
+owner still confirms or amends the exact shapes of their own group.
 
 ## 1. Conventions
 
@@ -25,8 +28,10 @@ and no channel ever returns one.
   containment and the sensitive-path rules (`ARCHITECTURE.md` §8.3) regardless of what the
   renderer claims. The only way the renderer names a location outside the current root is a native
   dialog that main itself shows (`workspace.openFolder`).
-- Secrets: `credentials.add` is the single channel carrying a secret, renderer → main only. No
-  channel input or output, no event, no error `details`, and no log line ever contains one.
+- Secrets: exactly two channels carry a secret, `auth.addApiKey` and `auth.rotateApiKey`, both
+  renderer → main only. No other channel input, no channel output, no event, no error `details`,
+  and no log line ever contains one. OAuth tokens never cross the bridge in either direction;
+  `auth.oauth.begin` returns only a `CredentialRef`.
 - Cancellation: long operations are cancelled by an explicit channel keyed by an id (`agent.stop`,
   `terminal.kill`), not by dropping the promise.
 
@@ -64,12 +69,12 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `unauthorized_sender` | Caller is not the expected window/frame |
 | `not_found` | Target does not exist (file, run, terminal, credential, approval) |
 | `outside_workspace` | Resolved path escapes the trusted root(s) |
-| `sensitive_path` | Path requires explicit approval and none was granted |
+| `denied` | The user declined a native confirmation dialog shown by main (e.g. a protected path) |
 | `untrusted_workspace` | Operation needs a trusted workspace |
 | `conflict` | Stale write (file changed on disk since it was read) |
 | `too_large` | Exceeds a size cap |
 | `cancelled` | Operation was cancelled |
-| `secure_storage_unavailable` | Only a plaintext credential backend exists; key refused |
+| `domain_error` | A domain-typed failure from an owner's error taxonomy (`AuthError`, `ProviderError`); `details` carries `{ domain, reason }`, validated by the owner's schema. See §9.3 |
 | `unknown_key` | Setting key not in the allowlist |
 | `no_longer_pending` | Approval already resolved or its run ended |
 | `unavailable` | Subsystem not ready |
@@ -83,7 +88,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `settings.*` | ag-ui |
 | `workspace.*`, `git.*`, `terminal.*` | ag-workspace |
 | `agent.*`, `permissions.*` | ag-agent |
-| `credentials.*` | ag-auth |
+| `auth.*` | ag-auth |
 | `models.*` | ag-providers |
 
 ag-ui is a consumer of every group except `settings.*`. Where a channel below is not mine, the
@@ -154,14 +159,20 @@ contract version.
 - Output: `{ text: string; encoding: 'utf8'; size: number; mtimeMs: number; truncated: boolean; lineEnding: 'lf' | 'crlf' }`
   or `{ binary: true; size: number }`. When `size` exceeds main's cap, `truncated` is `true` and the
   editor opens read-only with the large-file fallback.
-- Errors: `not_found`, `outside_workspace`, `sensitive_path`, `too_large` (hard cap), `untrusted_workspace`.
-- This is a user-driven editor action; main still enforces containment and sensitive-path rules.
+- Errors: `not_found`, `outside_workspace`, `denied`, `too_large` (hard cap), `untrusted_workspace`.
+- This is a user-driven editor action; main still enforces containment and the sensitive-path
+  rules. For a protected path (`.env`, key files, `.git/config`) main shows a **native confirmation
+  dialog** (built by main from the resolved path; the renderer supplies no "confirmed" flag, since a
+  compromised renderer could spoof one) and the call resolves only after the user answers. Decline →
+  `denied`. The call can therefore take arbitrarily long; the editor shows a "waiting for
+  confirmation" state and no timeout. Confirmation is per call. See §9.4.
 
 ### `workspace.writeFile`
 - Input: `{ path: string; text: string; expectedMtimeMs?: number }`.
 - Output: `{ mtimeMs: number }`.
-- Errors: `outside_workspace`, `sensitive_path`, `conflict` (disk changed since `expectedMtimeMs`),
-  `too_large`, `untrusted_workspace`.
+- Errors: `outside_workspace`, `denied`, `conflict` (disk changed since `expectedMtimeMs`),
+  `too_large`, `untrusted_workspace`. Protected paths use the same native confirmation as
+  `workspace.readFile`.
 - Writes are atomic (temp file + rename) in main. The UI offers "overwrite / reload / compare" on
   `conflict`.
 
@@ -241,7 +252,7 @@ Streams are events keyed by `runId`.
   checkpoint, run finished). The renderer renders from it; it adds no event types.
 
 ### Event `agent.approvalRequested`
-- Payload:
+- Payload (zod-validated both ends):
 
 ```ts
 {
@@ -249,49 +260,46 @@ Streams are events keyed by `runId`.
   runId: string;
   toolName: string;
   risk: 'read' | 'write' | 'exec' | 'network';
-  action:                                   // structured, built by main from the VALIDATED tool
-    | { kind: 'command'; command: string; cwd: string }        // input, never from model prose
-    | { kind: 'write_file'; path: string; diff: string }
-    | { kind: 'read_sensitive'; path: string }
-    | { kind: 'network'; method: string; url: string }
-    | { kind: 'mcp'; server: string; tool: string; input: unknown };
+  offered: Array<'once' | 'session' | 'deny'>;                  // REQUIRED; 'deny' always present
+  context: { providerId: string; modelId: string; credentialLabel: string };   // REQUIRED
+  action: ApprovalAction;           // main-built from the VALIDATED tool input, never from model prose
+  description?: string;             // optional model-written text; untrusted, secondary display only
 }
+
+type ApprovalAction =
+  | { kind: 'command'; form: 'shell'; command: string; cwd: string; env?: Record<string, string> }
+  | { kind: 'command'; form: 'argv'; argv: string[]; cwd: string; class: CommandClass; env?: Record<string, string> }
+  | { kind: 'write_file'; path: string; diff: string; op?: 'create' | 'modify' | 'delete' | 'rename'; to?: string }
+  | { kind: 'read_sensitive'; path: string; reason?: string }
+  | { kind: 'network'; method: string; url: string }
+  | { kind: 'mcp'; server: string; tool: string; input: JsonValue };   // z.json, never `unknown`
 ```
 
 - The renderer treats every string as untrusted text (`docs/ui-spec.md` §5.2).
+- `CommandClass` is ag-agent's gate type (D-006); the UI shows it as a label and does not interpret
+  it.
 
-**Fields `docs/ui-spec.md` §5 needs beyond the chief's union.** Each is a request to ag-agent, not
-an assumption; the UI renders what exists and omits what does not:
-
-1. `offered: Array<'once' | 'session' | 'deny'>` — which decisions main will accept for this
-   request. The UI must not infer the session option; it renders exactly this set. `'deny'` must
-   always be present.
-2. `context: { providerId: string; modelId: string; credentialLabel: string }` — the header line
-   "which key and model is this turn using". Label only, never key material.
-3. `write_file`: `op: 'create' | 'modify' | 'delete' | 'rename'` plus `to?` for rename, and the
-   path is the `realpath` (after symlink resolution). If the tool also has the requested path, it is
-   shown alongside so a symlinked target is visible. (`fs_write{path, sensitive, op, to?}` in the
-   gate action, `ARCHITECTURE.md` §5 / D-006, already carries `op` and `to`.)
-4. `read_sensitive`: `reason: string` (which protected rule matched, e.g. "`.env`"); the gate
-   action's `sensitive` class is the source.
-5. `command`: both gate shapes reach the UI. `exec{argv, cwd, class}` is shown as the argv list, one
-   element per line with quoting made visible, plus its `class`; `exec_shell{command, cwd}` is shown
-   as the exact command string and is always class `unknown` (D-006). The UI's `kind: 'command'`
-   therefore needs a discriminator, e.g. `form: 'argv' | 'shell'`, rather than flattening argv into
-   a string the user would be reading differently from what runs. `env?: Record<string, string>` for
-   overrides main will actually apply (values redacted by main if secret-shaped).
-6. `network`: the URL is already normalized by main (the UI shows IDN/punycode both ways itself).
-7. `description?: string` — optional model-written text, shown only in the labeled, secondary
-   "Agent's description (not verified)" block. Never the basis for anything else. The gate's
-   `literal` field is tool-built and is what the UI treats as the literal action.
+**Required vs optional** (the chief asked ag-agent to accept this split):
+- Required: `offered`, `context`, the `form` discriminator on `command`. `offered` is which
+  decisions main will accept; the UI renders exactly this set and never infers `'session'`.
+  `context` is the "which key and model is this turn using" header; label only, never key material.
+- Optional: `op` and `to` on writes (`fs_write{path, sensitive, op, to?}` in the gate action already
+  carries them), `reason` on `read_sensitive` (which protected rule matched), `env` on commands
+  (overrides main will actually apply, values redacted by main if secret-shaped), and `description`.
+  The UI renders what exists and omits what does not.
+- Paths are the `realpath` after symlink resolution. If the tool also has the requested path, it is
+  shown alongside so a symlinked target is visible.
+- `exec_shell` is always class `unknown` (D-006) and is shown as the exact command string. `exec` is
+  shown as the argv list, so a space inside an element is not read as two arguments.
+- `network`: the URL is already normalized by main (the UI shows IDN/punycode both ways itself).
+- The gate's `literal` field is tool-built and is what the UI treats as the literal action;
+  `description` is never the basis for anything.
 
 **Relation to `ARCHITECTURE.md` §5 / D-006.** The gate's `PermissionRequestInput.action`
-(`fs_read | fs_write | exec | exec_shell | network | mcp`) is what tools produce. The IPC
-`action` above is main's projection of it for display. They must stay isomorphic; ag-agent owns the
-mapping and the two unions should be defined together in `core`, so a new gate action cannot ship
-without a UI rendering (an unrecognized kind must fail closed to a labeled JSON view with Deny only,
-`docs/ui-spec.md` §5.2).
-
+(`fs_read | fs_write | exec | exec_shell | network | mcp`) is what tools produce. `ApprovalAction`
+is main's projection of it for display. The two unions are defined together in `core` (chief's
+direction), so a new gate action cannot ship without a UI rendering. An unrecognized `kind` **fails
+closed** to a labeled JSON view with Deny only (`docs/ui-spec.md` §5.2).
 ### Event `agent.approvalResolved`
 - Payload: `{ approvalId: string; outcome: 'allowed_once' | 'allowed_session' | 'denied' | 'cancelled' | 'timed_out' | 'run_stopped' }`.
   Mapping from the gate's `PermissionDecision` (D-006): `deny` with reason `user` → `denied`,
@@ -326,58 +334,122 @@ without a UI rendering (an unrecognized kind must fail closed to a labeled JSON 
   `invalid_input`. Persistent-rule creation from inside an approval prompt is deliberately not a
   channel.
 
-## 6. `credentials.*` (owner: ag-auth)
+## 6. `auth.*` (owner: ag-auth)
 
-### `credentials.add`
-- Input: `{ providerId: string; label: string; secret: string }`. **The only channel carrying a
-  secret; renderer → main only.**
-- Output: `{ ref: CredentialRef }` where `CredentialRef = { id: string; providerId: string; label: string }`.
-- Errors: `secure_storage_unavailable` (only a plaintext backend), `invalid_input`, `conflict`
-  (duplicate label for the provider). Error messages and `details` never echo the secret.
-- The renderer clears the input (`SecretInput.clear()`) as soon as the call is dispatched, whether
-  it later succeeds or fails; a failed add means the user retypes.
+ag-auth's channel set, from their proposal to the chief. `CredentialRef` is ag-auth's strict core
+schema, which is the only credential shape the renderer ever receives:
 
-### `credentials.list`
-- Input: `{}`. Output: `{ refs: CredentialRef[] }`. No key material, no prefix or suffix hint.
+```ts
+CredentialRef = {          // .strict()
+  id: string;              // /^cred_[A-Za-z0-9_-]{22}$/, opaque
+  label: string;           // 1–100 chars
+  providerId: string;
+  kind: 'api_key' | 'oauth_pkce';
+  createdAt: string;       // ISO datetime
+  monthlyCapUsdMicros?: number;
+}
+```
 
-### `credentials.remove`
-- Input: `{ id: string }`. Output: `{}`. Errors: `not_found`.
-- Re-validates `agent.selection`: if the removed credential was selected, main emits
-  `settings.changed` with a cleared selection.
+| Channel | Input | Output |
+|---|---|---|
+| `auth.list` | `{}` | `CredentialRef[]` |
+| `auth.addApiKey` | `{ providerId, label, secret }` | `CredentialRef` |
+| `auth.validate` | `{ id }` | `{ ok: true }` |
+| `auth.rotateApiKey` | `{ id, secret }` | `CredentialRef` |
+| `auth.delete` | `{ id }` | `{ revoked: boolean }` |
+| `auth.oauth.begin` | `{ providerId, label }` | `CredentialRef` (resolves when the flow ends) |
+| `auth.oauth.cancel` | `{ providerId }` | `{}` |
+| `auth.setMonthlyCap` | `{ id, capUsdMicros: number \| null }` | `CredentialRef` |
+| `auth.getUsage` | `{ id, month: 'YYYY-MM' }` | `{ inputTokens, outputTokens, cachedTokens, costUsdMicros }` |
+
+Errors: ag-auth returns `Result<_, AuthError>`; over this bridge they arrive as `domain_error` with
+`details: { domain: 'auth', reason: AuthErrorCode }`. `AuthErrorCode` is ag-auth's closed set
+(`encryption_unavailable`, `insecure_backend`, `store_corrupt`, `store_io`, `not_found`,
+`duplicate`, `validation_failed`, `validator_unreachable`, `oauth_state_mismatch`,
+`oauth_timeout`, `oauth_aborted`, `oauth_provider_error`, `refresh_failed`, `revocation_failed`).
+Messages are constant strings per code and never contain a secret; the renderer keeps its own
+user-facing text keyed on `reason` (an exhaustive switch, so a new code is a compile error, not a
+blank toast). Universal codes (`invalid_input`, `unauthorized_sender`, `unavailable`, `internal`)
+also apply.
+
+Renderer behavior and constraints:
+- **Secret-carrying channels are exactly `auth.addApiKey` and `auth.rotateApiKey`**, renderer →
+  main only. The `SecretInput` is cleared as soon as the call is dispatched, whether it later
+  succeeds or fails; a failed add means the user retypes. Nothing is persisted in renderer state.
+- `auth.list` and every `CredentialRef` carry no key material, no prefix or suffix hint.
+- `auth.delete` with `revoked: false` for an OAuth credential is shown ("removed locally; the
+  provider could not be told to revoke it"), not hidden.
+- If `auth.delete` removes the credential in `agent.selection`, main clears the selection and emits
+  `settings.changed`; the renderer does not guess.
+- `auth.oauth.begin` is a long-lived invoke (the user is in their browser). The UI shows a waiting
+  state with Cancel wired to `auth.oauth.cancel`. Per D-002, subscription OAuth is off until the
+  chief records the terms; the UI offers OAuth only for providers where it is enabled (see §9.7).
+  OAuth tokens never cross the bridge.
+- The spend meter reads `auth.getUsage` for the selected credential and the current UTC month, and
+  the live per-turn count from `agent.event` usage. Cap *enforcement* is the agent budget's job; the
+  UI only shows state.
 
 ## 7. `models.*` (owner: ag-providers)
 
 ### `models.list`
-- Input: `{ credentialId: string }`. Output: `{ models: Array<{ id: string; displayName: string; contextWindow?: number; supportsTools: boolean }> }`.
-- Errors: `not_found` (credential), `unavailable` (provider unreachable; details carry a safe
-  reason, e.g. "authentication failed" or "network error", never the response body or the key).
-- The call is made in main with the credential resolved just-in-time; cancellation is by a
-  `models.cancelList` only if ag-providers wants one, otherwise the UI ignores a stale result.
+- Input: `{ credentialId: string }`.
+- Output: `ModelInfo[]`, core's schema from `docs/model-contract.md` §5 (`providerId`, `id`,
+  `displayName`, `contextWindow: number | null`, `maxOutputTokens: number | null`,
+  `capabilities: { tools, vision, reasoning, promptCaching }` each `'yes' | 'no' | 'unknown'`,
+  optional `pricing`, `source: 'api' | 'catalog' | 'default'`).
+- Errors: `not_found` (credential); `domain_error` with `details: { domain: 'provider', reason: ProviderErrorKind }`
+  (e.g. `auth`, `network`, `rate_limit`). `ProviderError.message` is constant per kind. The renderer
+  needs `kind`, `message`, `retryable`, and optionally `retryAfterMs` and `requestId`; it does not
+  need `detail` (the redacted vendor excerpt is for logs) and ag-providers/ag-agent need not forward
+  it.
+- The call runs in main with the credential resolved just-in-time. A stale result for a credential
+  that is no longer selected is ignored by the UI; there is no cancel channel unless ag-providers
+  wants one.
+- The picker renders `unknown` honestly (`docs/ui-spec.md` §4.1): never as "no", never as "yes".
 
 ## 8. What the renderer will not need
 
 Stating the negative space so reviewers can hold the line:
 
-- No channel returns a credential or any fragment of one.
+- No channel returns a credential or any fragment of one, and only `auth.addApiKey` and
+  `auth.rotateApiKey` accept one.
 - No channel lets the renderer name an arbitrary absolute path, run an arbitrary executable, set a
   child-process environment, make an HTTP request, or read a file outside the trusted root.
+- No channel (and no renderer-supplied flag) confirms a protected-path access; only main's native
+  dialog does.
 - No channel creates a persistent permission rule as a side effect of an approval.
 - No generic key/value, "eval", or "forward this to main" channel.
 
 ## 9. Open items
 
-1. **Channel list sign-off** from the chief (this document), then each owner confirms or amends
-   their group's shapes in `@autogeek/core`. Where an owner changes a shape, this document is
-   updated to match in the same change, or marked superseded.
-2. **Approval payload additions** (§5, items 1–7) — ag-agent to accept, amend or refuse. Item 1
-   (`offered`) is needed for the "UI renders only what main offered" rule in `docs/ui-spec.md`
-   §5.1; without it the UI would have to infer session-grantability, which it must not do.
-3. **Theme bootstrap.** `settings.get` is asynchronous, so first paint could flash the wrong theme.
-   Either the preload exposes the initial theme value synchronously at window creation (ag-foundation,
-   needs sign-off), or the stylesheet defaults to `prefers-color-scheme` and `settings.get` only
-   overrides, accepting one possible flash for users who override the system setting. Recommending
-   the preload value.
-4. **Stop shortcut** — which global accelerator, chosen with ag-agent to avoid editor/terminal
-   collisions.
-5. **Terminal water marks and the large-file `maxBytes` default** — ag-workspace to choose and test;
-   the renderer takes them as given.
+1. **Owner confirmation.** The chief has signed off the channel list. Each owner confirms or
+   amends their group's exact shapes in `@autogeek/core`. Where an owner changes a shape, this
+   document is updated to match in the same change, or marked superseded.
+2. **Approval payload.** The chief is asking ag-agent to accept §5's required/optional split, and
+   to define `ApprovalAction` together with the gate action union in `core`.
+3. **`IpcError` and domain errors** (ag-foundation). The `domain_error` shape in §1.3 carries
+   `AuthError` and `ProviderError` reasons through the bridge. The renderer needs them as a typed,
+   exhaustively switchable value, so the `IpcError` type should be a discriminated union with a
+   domain variant rather than a free string. I recommend `{ code: 'domain_error'; domain: 'auth' | 'provider'; reason: <that domain's code enum> }`.
+4. **Native confirmation for protected paths on `workspace.readFile`/`writeFile`**
+   (ag-workspace). A dead-end error on editing `.env` is bad UX, but a renderer-supplied "I
+   confirmed" flag is spoofable by a compromised renderer. Proposal: main shows a native modal
+   dialog whose text it builds from the resolved path, awaits the answer, and the channel resolves
+   afterward (accept → proceed, decline → `denied`). Per call, nothing remembered. If ag-workspace
+   wants "remember for this file this session", that is theirs to propose.
+5. **Theme bootstrap** (ag-foundation to confirm feasibility). Main passes the validated initial
+   theme through `webPreferences.additionalArguments`; the sandboxed preload reads it from
+   `process.argv`, re-validates it against the theme enum, and exposes it to the renderer as a
+   synchronous value on the bridge (not a channel), so `data-theme` is correct before first paint.
+   If the argv route is infeasible, the fallback is a stylesheet that follows
+   `prefers-color-scheme` with `settings.get` overriding, accepting one possible flash for users who
+   override the system theme.
+6. **Stop shortcut** (ag-agent to confirm no collision). Proposal: `Cmd/Ctrl+Shift+Backspace`
+   (`docs/ui-spec.md` §3.9). The Stop button is also always visible whenever a run is active. When
+   the terminal has focus, `Ctrl+C` is never intercepted: it goes to the PTY. The terminal installs a
+   key handler that lets only registered app chords through, and `Ctrl+C` is not one.
+7. **Which auth kinds a provider offers.** The UI needs to know, per provider, whether it supports
+   API key, OAuth (and whether OAuth is enabled per D-002), or none (local). I prefer a static
+   provider catalog in `core` over a channel, since it is not user data (ag-auth / ag-providers).
+8. **Terminal water marks and the large-file `maxBytes` default** — ag-workspace to choose and
+   test; the renderer takes them as given.

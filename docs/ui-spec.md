@@ -38,10 +38,12 @@ object so editor and chrome cannot drift (brief item 3, "theme sync").
 | `system` (default) | Follows `prefers-color-scheme`, updates live on change |
 | `dark` / `light` | Explicit override, persisted through the validated settings channel |
 
-`data-theme` is set on `<html>` before first paint (inline in `index.html` is blocked by the strict
-CSP, so the preload bridge supplies the initial value synchronously, or the stylesheet defaults via
-`@media (prefers-color-scheme)` and the attribute only overrides). `color-scheme` is set to match so
-native scrollbars and form controls follow.
+`data-theme` is set on `<html>` before first paint. An inline script in `index.html` is blocked by the
+strict CSP, so main passes the validated initial theme through `webPreferences.additionalArguments`;
+the sandboxed preload reads it from `process.argv`, re-validates it against the theme enum, and
+exposes it as a synchronous bridge value (`docs/ipc-channels.md` §9.5). If that route proves
+infeasible, the stylesheet follows `@media (prefers-color-scheme)` and the attribute only
+overrides. `color-scheme` is set to match so native scrollbars and form controls follow.
 
 ### 2.2 Color
 
@@ -316,7 +318,7 @@ The foundation for the file tree, transcript, command-palette results and the di
 | `Cmd/Ctrl+J` | Toggle bottom panel |
 | `Cmd/Ctrl+S` | Save active editor |
 | `Escape` (agent panel focused or a run active) | Never starts a run or approves anything; used only to dismiss UI |
-| Stop-run shortcut | Always bound and always enabled while a run is active (chosen by the chief with the agent runtime, see §6) |
+| `Cmd/Ctrl+Shift+Backspace` | Stop the active run (proposed; ag-agent to confirm no collision). Always bound and enabled while a run is active. The Stop button is also always visible. Never `Ctrl+C`: with the terminal focused, `Ctrl+C` always goes to the PTY, and the terminal's key handler passes through only registered app chords |
 
 Shortcuts are registered through one typed registry that detects conflicts in tests and exposes the
 list in the command palette. No shortcut may be required to be pressed in a text-entry context
@@ -335,6 +337,22 @@ Short, because the approval prompt (§5) is the part with security consequences.
   never collapsed.
 - **Streaming:** transcript is an `aria-live="off"` region with a "Run finished"/"Awaiting
   approval" polite status line, so screen-reader users are not flooded token by token.
+
+### 4.1 Model and credential picker
+
+Data comes from `auth.list` (`CredentialRef`: label, provider, kind) and `models.list`
+(`ModelInfo`, `docs/model-contract.md` §5). The picker shows what is known and says so plainly when
+it is not:
+
+- Capabilities (`tools`, `vision`, `reasoning`, `promptCaching`) are tri-state. `'unknown'` renders
+  as "Unknown" with its own glyph and text, never as "No" and never as "Yes". A model whose `tools`
+  is `'no'` is shown as unable to run in agent mode; `'unknown'` is selectable with a visible note.
+- `contextWindow` and `maxOutputTokens` of `null` render "Unknown", not 0 or a blank.
+- `pricing` absent renders "Pricing unknown", and the spend meter for that model shows tokens only,
+  with "cost unavailable" rather than a computed zero. `source: 'catalog' | 'default'` is labeled
+  "estimated".
+- The always-visible "which key and model is this turn using" indicator reads credential label,
+  provider, and model id from the turn, and it is the same data as the approval card's context line.
 
 ## 5. Approval-prompt UX
 
@@ -413,7 +431,7 @@ displayed text, not anchors), no images, no HTML. An approval card cannot be res
   more prominent than Deny (no hero-colored "Allow").
 - Keyboard: `Tab` order as above; `Escape` = Deny. `Enter` activates only the focused button. There
   are no single-key accelerators for Allow (no `Y`, no `Cmd+Enter` approve) so a stray keypress
-  cannot approve. Deny may have `Cmd/Ctrl+Backspace` as a convenience.
+  cannot approve. Deny needs no extra accelerator: it holds initial focus and `Escape`.
 - **Typing-ahead guard:** a prompt that appears while the user is typing or pressing keys must not
   be approvable by those keystrokes. The dock does not steal focus from the composer or the
   editor (see §5.5) and, once focused, ignores activation events for the first 400ms after it
@@ -494,6 +512,7 @@ and 4 are tracked. Remaining items, each blocking only the matching implementati
    exact-action grant that main may withhold (deny / allow once only) for destructive and network
    commands and protected paths. The chief confirmed `'session'` creates an exact-match rule only;
    whether it is offered for exec/network is main's decision, delivered through `offered`.
-3. **Theme bootstrap.** Whether the preload may expose the initial theme synchronously so
-   `data-theme` is correct before first paint under the strict CSP (`docs/ipc-channels.md` §9.3).
-4. **Stop shortcut.** Which global accelerator stops a run, chosen with ag-agent.
+3. **Theme bootstrap.** Direction agreed with the chief (argv via `additionalArguments`);
+   ag-foundation to confirm feasibility (`docs/ipc-channels.md` §9.5).
+4. **Stop shortcut.** `Cmd/Ctrl+Shift+Backspace` proposed; ag-agent to confirm
+   (`docs/ipc-channels.md` §9.6).
