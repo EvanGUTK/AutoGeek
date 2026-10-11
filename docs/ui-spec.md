@@ -332,180 +332,390 @@ Shortcuts are registered through one typed registry that detects conflicts in te
 list in the command palette. No shortcut may be required to be pressed in a text-entry context
 without a modifier.
 
-## 4. Agent panel surfaces that feed the approval flow
+## 4. Agent panel
 
-Short, because the approval prompt (§5) is the part with security consequences.
-
-- **Run header:** always shows `provider · model · credential label` for the turn currently running
-  (from `CredentialRef.label`, never from key material), plus the **Stop** button. Stop is rendered
-  outside any scrollable or collapsible region, is never disabled while a run is active, and is
-  reachable by `F6` and a global shortcut. Stopping resolves every pending approval as **deny**.
-- **Tool-call cards** show the literal call: tool name, risk badge, and the input rendered
-  verbatim as described in §5.2. They are collapsible, but a card with an unresolved approval is
-  never collapsed.
-- **Streaming:** transcript is an `aria-live="off"` region with a "Run finished"/"Awaiting
-  approval" polite status line, so screen-reader users are not flooded token by token.
+The shapes the panel renders are defined once, in `docs/agent-contract.md` (`WireAgentEvent`,
+`WireAction`, `WireMessage`, `WirePermissionRequest`, `ApprovalRequestedPayload`) and
+`docs/ipc-channels.md`. This section is only the UI's rendering rules. Every switch over a union
+(`event.type`, `action.kind`, `RunOutcome.reason`, `ToolOutcome.kind`, `DecisionVia`,
+`ProviderErrorKind`, `AuthErrorCode`, warning codes) is exhaustive with a typed default, so a new
+member is a compile error in the UI package, not a silent blank. All user-facing strings for these
+live in one table in the UI, keyed by the code; no vendor or model text is ever used as a label.
 
 ### 4.1 Model and credential picker
 
-Data comes from `auth.list` (`CredentialRef`: label, provider, kind) and `models.list`
-(`ModelInfo`, `docs/model-contract.md` §5). The picker shows what is known and says so plainly when
-it is not:
+Data comes from `auth.list` (`CredentialRef`: label, provider, kind), the provider catalog in
+`core` (`displayName`, `authKinds`, `acquisition`), and `models.list` (`ModelInfo`,
+`docs/model-contract.md` §5). The picker shows what is known and says so plainly when it is not:
 
 - Capabilities (`tools`, `vision`, `reasoning`, `promptCaching`) are tri-state. `'unknown'` renders
   as "Unknown" with its own glyph and text, never as "No" and never as "Yes". A model whose `tools`
   is `'no'` is shown as unable to run in agent mode; `'unknown'` is selectable with a visible note.
-- `contextWindow` and `maxOutputTokens` of `null` render "Unknown", not 0 or a blank.
+- `contextWindow` and `maxOutputTokens` of `null` render "Unknown (AutoGeek assumes 8,192 / 4,096
+  to stay safe)", matching `effectiveLimits`, not 0 or a blank.
+- **Small windows are flagged.** Below `SMALL_CONTEXT_TOKENS = 32_768` the row shows a warning chip
+  and, on selection, "Small context window (N tokens). Long conversations and large files will be
+  compacted or cut early." The threshold is a judgment: the agent's input budget is the window minus
+  the output reservation minus a 5% margin (`docs/agent-contract.md` §8), and the system prompt plus
+  tool definitions already take several thousand tokens, so under about 32k there is little left for
+  code. It is one constant, easy to revisit. For local servers (Ollama and similar) the real
+  configured value is what `ModelInfo.contextWindow` reports, and the warning adds "Local servers
+  may silently cut prompts that exceed their configured context length."
 - `pricing` absent renders "Pricing unknown", and the spend meter for that model shows tokens only,
   with "cost unavailable" rather than a computed zero. `source: 'catalog' | 'default'` is labeled
   "estimated".
+- **Local servers.** The base URL is editable in model settings and shown next to the provider. A
+  connection failure (`ProviderErrorKind` `network` or `timeout` for a local provider) says to
+  check that the server is running and that the port matches, because default ports differ by
+  version (for example llama.cpp's). It does not guess a port.
+- **Keyless providers.** The catalog's `acquisition` decides which credential step the provider
+  shows. A provider that needs no key shows no key field and no "Add key" step, and its credential
+  entry in the picker is simply the server.
 - The always-visible "which key and model is this turn using" indicator reads credential label,
-  provider, and model id from the turn, and it is the same data as the approval card's context line.
+  provider, and model id from `run_started.model` (the turn actually running), and it is the same
+  data as the approval card's context line.
+
+### 4.2 Run header and composer
+
+- **Run header:** `provider · model · credential label`, the budget meters, and the **Stop** button.
+  Stop is rendered outside any scrollable or collapsible region, is never disabled while a run is
+  active, and is reachable by `F6` and `Cmd/Ctrl+Shift+Backspace`. It never intercepts `Ctrl+C`.
+  Stopping resolves every pending approval for the run as stopped (`run_stopped`).
+- **Budgets** (`run_started.budgets`, `usage.totals`): steps (`n / max`), tokens, spend, and elapsed
+  time against `maxWallMs`. Spend reads `costUsdMicros`; `null` shows "cost unavailable" and the
+  token cap remains the bound. A meter turns to the warning style at 80% and states the limit in
+  words. **Pending approvals count against wall time**, so the approval card shows when the run will
+  stop if left waiting ("This run stops at 14:32 even while waiting"), computed from the envelope
+  `at` of `run_started` plus `maxWallMs`.
+- **Composer:** the draft is kept while a run is active. While a run is active in the session,
+  Send is replaced by Stop (`agent.send` would return `conflict: run_active`), which also covers a
+  pending approval. Mode (`ask`/`plan`/`agent`) and the model selection are chosen per send and
+  shown on the composer. In an untrusted workspace the `agent` mode is unavailable with the reason
+  stated.
+- **Settings the budgets read from** are user-adjustable; the key and who applies it are an open
+  item (`docs/ipc-channels.md` §9).
+
+### 4.3 Transcript and tool-call cards
+
+- The transcript is an `aria-live="off"` region with a polite status line ("Run finished",
+  "Awaiting approval") so screen-reader users are not flooded token by token.
+- Deltas are previews. `assistant_message`, `user_message` and `tool_results` are the record of
+  truth: when one arrives it replaces the streamed preview for that step. Events are applied
+  idempotently by `seq` (anything at or below the last applied `seq` is ignored), so replay and live
+  delivery can overlap safely.
+- **User messages** show the typed `text` and `contextItems` as chips ("File: src/a.ts"). Expanded
+  @-mention content never reaches the renderer.
+- **Reasoning** is a collapsed disclosure. Empty text renders "Reasoning hidden".
+- **Model text** goes through `SafeMarkdown` only (§6.1). Tool inputs and outputs, paths, commands
+  and JSON are inert text through the display-safe function (§5.2), never markdown.
+- **Tool-call cards** show tool name, risk badge, and the input verbatim as in §5.2. Input may be an
+  object, `{ invalidRaw }` ("The model sent an invalid call", raw text shown inert, ≤ 4 KiB), or
+  `{ omittedBytes }` ("Input too large to show, N bytes"). Image parts render only when the wire
+  gives bytes; `image_omitted` shows the type and size. A card with an unresolved approval is never
+  collapsed.
+- **Card states** (one per `ToolOutcome` and lifecycle point), each with text, not color alone:
+
+  | State | Source | Text |
+  |---|---|---|
+  | Awaiting approval | `approvalRequested` for the `callId`, unresolved | "Waiting for your decision" |
+  | Running | `tool_started` | "Running", with elapsed time |
+  | Done | `completed`, `isError: false` | "Done" (+ "Output truncated" if `truncated`) |
+  | Failed | `completed`, `isError: true` | "The tool reported an error" |
+  | Not run | `rejected` | reason table: unknown tool, not available in this mode, invalid input, malformed call, repeated call, "disabled for this session after a permission violation" |
+  | Skipped | `skipped` | "Skipped: run stopped / budget reached / run failed" |
+  | Interrupted | `interrupted` | "Stopped while running. It may have partly run; check your files." |
+
+- **Decision rows** from `permission_decided` use an exhaustive `DecisionVia` table
+  ("Allowed by a saved rule", "Allowed by your session approval", "Allowed: reading a non-sensitive
+  file", "Denied by you", "Denied by policy: outside the workspace", "Denied: read-only mode", and so
+  on). Policy denials are never presented as the user's choice.
+- **Compaction** shows "Conversation compacted: N messages summarized (tokens before → after)" with
+  the summary as an expandable `SafeMarkdown` block.
+- **Warnings** (`spend_cap_unpriced`, `checkpoint_excluded_files`, `context_near_limit`,
+  `reasoning_dropped`) render a constant string per code from the UI table; `warning.message` is not
+  displayed.
+
+### 4.4 Run outcomes
+
+`run_finished.outcome` renders once at the end of the run. Error states persist on the run; they are
+not toasts.
+
+| `reason` | Presentation |
+|---|---|
+| `end_turn` | Nothing extra |
+| `plan_submitted` | Plan view (§4.5) |
+| `aborted` | "Stopped" |
+| `budget` | "Stopped: step / token / time / spend budget reached", with the limit. Send a message to continue, or change the budget in Settings |
+| `max_tokens` | "The model reached its output limit mid-answer" |
+| `refusal` | "The model declined to continue" |
+| `provider_error` | Exhaustive `ProviderErrorKind` table (auth, quota, rate limit, network, and so on) with a safe constant text and, for retryable kinds, "Try again" that refills the composer and does not auto-send. Never vendor text |
+| `loop_detected` | "Stopped: the agent kept repeating a call to `<tool>`" (tool name inert) |
+| `invalid_tool_calls` | "Stopped: the model kept sending malformed tool calls" |
+| `checkpoint_failed` | "File edits were refused because they could not be made undoable" |
+| `gate_violation` | **Error state** (below) |
+| `internal_error` | "Something went wrong in AutoGeek" with the `correlationId` as copyable text |
+
+**Gate violation.** The tool `<tool>` completed without a recorded permission check
+(`docs/agent-contract.md` §7). The state is an error, persistent on the run and on the tool card, not
+dismissable, announced once with `role="alert"`: "Security: `<tool>` completed without a recorded
+permission check. Its result was withheld and the tool is disabled for this session. Review your
+files; this indicates a bug in AutoGeek." A "Copy details" action copies the run id, tool name and
+timestamp only. Later calls to that tool show "disabled for this session".
+
+### 4.5 Plan view
+
+`plan_proposed` shows `summary` and ordered `steps` (title, detail, files) as inert text; `files` are
+root-relative paths shown as text, with an "Open" action that calls `workspace.readFile` only after
+the UI checks the path has no `..`, is not absolute and contains no NUL. The plan is read-only in
+v1. **"Proceed with this plan"** sends `agent.send` in mode `agent` on the same session with a
+fixed UI-owned string; the session transcript already holds the plan. **"Ask for changes"** focuses
+the composer. Proceed is unavailable in an untrusted workspace, with the reason stated.
+
+### 4.6 Undo
+
+A user message whose run made writes offers **"Restore to before this message"**. It hides when the
+run made no writes (`agent.undoRun` returns `not_found`).
+
+1. The action calls `agent.undoRun { dryRun: true }`.
+2. An `alertdialog` (initial focus on **Cancel**) lists the files that will be restored, then the
+   later messages whose changes will also be reverted ("This also undoes the changes from 2 later
+   messages"), then any conflicts (files changed outside the agent since the snapshot).
+3. With conflicts, the default action is still Cancel. A separate, not-default, destructive button
+   "Overwrite these N files" is the only way to send `force: true`.
+4. The dialog states that the workspace goes back to how it was before that message, that the
+   conversation is cut at that message, and that this cannot be redone from AutoGeek yet.
+5. `conflict: run_active` disables the action with the reason "A run is active".
+6. On success the transcript is cut at that message locally.
+
+"Review changes" for a run uses `agent.getRunDiff`: a virtualized file list (operation including
+`rename` with `from`; binary files labeled "Binary file"; `diffOmitted` shows path and size only)
+with the diff for the selected file.
+
+### 4.7 Settings: permission rules and session approvals
+
+- **Session approvals** (`permissions.listSessionApprovals`) show each grant as its literal action
+  (same renderer as §5.2) with **Revoke**. Revocation is immediate.
+- **Saved rules** (`permissions.listRules`, scope badge global/root) are created from a structured
+  form per `match.kind`, never from free text interpreted as a pattern: exact path, path glob,
+  exact argv, argv prefix, exact shell string, exact URL, MCP server/tool/input. The `any` match is
+  offered only for `deny` and `ask`. The form states what the contract guarantees: a broad allow
+  never silently auto-allows a sensitive or otherwise elevated action; those still ask.
+- **Adding an `allow` rule** calls `permissions.addRule`; main shows its own native confirmation that
+  renders the rule literally (for `argv_prefix`: "Allow any command beginning with: …"; for MCP
+  without `input`: "Allow ⟨server⟩/⟨tool⟩ with ANY input"). The form shows the same wording beforehand
+  so the dialog is no surprise. `user_declined` leaves the list unchanged and is reported neutrally
+  ("Not added"), not as an error. Deny and ask rules are added without a dialog.
+- A prompt never creates a saved rule (§5.4); this editor is the only way.
+
+### 4.8 Open folder and workspace trust
+
+Opening a folder calls `workspace.openFolder`; main shows the native folder dialog. A new folder is
+untrusted: the editor and file tree work, while the terminal and agent mode are unavailable, a
+persistent "Restricted mode" indicator is shown in the status bar, and a panel explains what trust
+enables and what a hostile folder could do. **Trust this folder** calls `workspace.setTrust` with
+`true`; main shows a native confirmation built from its own data (the folder name and path). A
+refusal (`user_declined`) leaves the folder untrusted and is not an error. Revoking trust takes
+effect at once and main drops the session approvals for that root; the UI refreshes from events,
+not by guessing.
 
 ## 5. Approval-prompt UX
 
 Goal: the human approves **the thing that will actually happen**, in a form the model cannot
 dress up, with no path to blanket permission. This is UI only: the decision is returned to main,
-which enforces it through `PermissionGate`, and the renderer cannot widen what it is offered.
+which enforces it through the permission gate, and the renderer cannot widen what it is offered.
+It protects a person from a mistake; it does not defend against script running in a compromised
+renderer (§6.2).
 
 ### 5.1 Principles
 
 1. **Show the literal action, not model prose.** What is displayed is derived from the structured
-   `PermissionRequest` main sent (tool name, resolved input), never from a free-form model message.
-2. **The renderer displays; main decides.** The set of buttons is exactly the set of decisions main
-   offered for this request. The UI cannot add an option.
+   `WireAction` main sent, never from a free-form model message. `renderLiteral` text is a
+   fallback, not the primary view.
+2. **The renderer displays; main decides.** The set of buttons is exactly `offered`. The UI cannot
+   add an option.
 3. **Never allow-all.** There is no "always allow", "allow all", "don't ask again for this tool",
    "allow for this workspace", or wildcard/pattern grant in the UI. See §5.4.
-4. **Deny is the default and the easy path.** Default focus, `Escape`, closing, timeout, stopping
-   the run, and renderer teardown all resolve to deny.
-5. **No time pressure toward yes.** No countdown that auto-approves, ever. A timeout, if main
-   defines one, resolves to deny and says so.
+4. **Deny is the default and the easy path.** Default focus, `Escape` and the Deny button resolve
+   to deny with no delay. When the window is destroyed or crashes, **main** denies and aborts; the
+   renderer cannot be relied on to do anything after a crash.
+5. **No time pressure toward yes.** There is no approval timeout and no countdown, ever. Wall-time
+   budgets bound the wait, and the card says when the run will stop (§4.2).
 
 ### 5.2 What is shown
 
 A prompt is one card (the **approval dock**, §5.5) containing, top to bottom:
 
-1. **Header:** "Approval needed", the risk badge (`READ`/`WRITE`/`EXEC`/`NETWORK` text label, from
-   `Tool.risk`), and the context line `tool name · provider · model · credential label` so the user
-   can see which agent turn and key this is attributed to. If more requests are queued,
-   "1 of 3" is shown.
-2. **The literal action**, per tool kind, in `--ag-font-mono` / `mono-md`, in a bordered block with
-   its own label. It is rendered as **text with visible escaping**, never interpreted:
-   - **Shell (`exec_shell`, always "unknown" class):** the exact command string and the exact cwd, plus
-     any env overrides main reports. **Argv exec (`exec`):** the argv list, one element per line
-     with quoting visible (so a space inside an element is not mistaken for two arguments), plus its
-     class and cwd. The two forms are labeled differently and never flattened into each other. The
-     command is shown in full: long commands wrap (no truncation, no ellipsis) and the block
-     scrolls within a max height; line breaks and every `;`, `&&`, `|`, `$()`, backtick, redirect
-     and heredoc are visible as written. Control characters, zero-width characters, bidirectional
-     overrides, and non-ASCII look-alikes are rendered as visible escapes (e.g. `⟦U+202E⟧`) with a
-     marker line "This text contains N hidden or non-ASCII characters", because hiding them is how a
-     prompt gets spoofed. The risk classification that main attached (e.g. "destructive", "network")
-     is shown as a chip.
-   - **File read/write/edit/delete:** the **resolved real path** main computed (symlinks resolved),
-     the workspace-relative form, and the operation. If the requested path differs from the resolved
-     path, both are shown, labeled. Paths needing explicit approval by policy (`.env`, key files,
-     `.git/config`) get a labeled reason ("matches protected pattern") and no session option unless
-     main offers it. For writes and edits, the **exact diff** (unified, from main's computed result,
-     not the model's description) with `+`/`−` markers, line numbers, and a "create"/"modify"/
-     "delete" label; large diffs show stats and the full diff is reachable (virtualized), never
-     summarized away.
-   - **Network:** method, full URL (scheme, host, port, path, query), with the host separated and
-     emphasized, and punycode/IDN hosts shown in both forms.
-   - **MCP tool:** server name, tool name, and the argument object pretty-printed as JSON with every
-     key and value visible (nested expanded by default up to a bound, with a "show all" that renders
-     the rest); risk is shown as main classified it (`network`/`exec` until proven otherwise).
-   - **Anything unrecognized:** the tool name and the input as pretty-printed JSON; the prompt never
-     degrades to a generic "The agent wants to continue".
-3. **Model's stated reason (optional, visually secondary):** if the request carries model-written
-   text, it appears below the action in a block labeled "Agent's description (not verified)", in
-   `--ag-text-muted`, as plain text, collapsed past three lines. It never replaces or sits above the
-   literal action, and it is never styled like a system message.
+1. **Header:** "Approval needed", the risk badge (`READ`/`WRITE`/`EXEC`/`NETWORK` text label from
+   `request.risk`), the context line `tool · provider · model · credential label` (from
+   `context`) so the user can see which turn and key this is attributed to, and "1 of N" when more
+   than one approval is pending in this window. A line and character count of the action is shown
+   in the action header.
+2. **The action**, by `action.kind`, in `--ag-font-mono` / `mono-md`, in a bordered block with its
+   own label, as text through the display-safe function below:
+   - **`exec_shell`:** the exact command string and cwd, plus env overrides. Labeled "Shell command".
+   - **`exec`:** the argv list, one element per line with its index and visible quotes (`[0] "npm"`,
+     `[1] "test"`, an empty element as `""`), so a space inside an element is not read as two
+     arguments; cwd; the class as a chip; env. Labeled "Program and arguments". The two forms are
+     never flattened into each other.
+   - **`fs_read` / `fs_write`:** the operation (`create`, `modify`, `delete`, `rename` with
+     `path → to`), the workspace-relative path, and `requestedPath` labeled "Requested as" when it
+     differs (a symlink). `sensitive` shows the `sensitiveReason` ("matches protected pattern ⟨…⟩")
+     and no session option unless `offered` includes it. A `{outside:true}` path renders "outside the
+     workspace: ⟨basename⟩" and is never opened.
+   - **`fs_write` content:** the exact `diff` (unified, tool-computed) with `+`/`−` markers, line
+     numbers, virtualized so it can be read in full. If `diffOmitted` is present, the card says
+     "Diff too large to display (N lines changed, M bytes). Only the path and size are shown.",
+     offers no session option, and Deny stays first.
+   - **`network`:** method and full URL. The host is separated and emphasized as the parser gives it
+     (ASCII, so internationalized hosts appear as `xn--` labels), with a chip "Internationalized
+     domain name" when any label is `xn--`. There is no Unicode rendition of the host.
+   - **`mcp`:** an "MCP" chip and the name **namespaced `server/tool`**, each part escaped, so a
+     server cannot present a tool as a built-in name; the `input` object pretty-printed as JSON with
+     every key and value visible (the 64 KiB bound is already enforced upstream). Nested levels are
+     expanded to a bound with a "Show all" that reveals the rest.
+   - **Unrecognized kind or a payload that fails validation:** see §5.5. The UI never degrades to a
+     generic "The agent wants to continue".
+3. **`description` (optional, visually secondary):** model-written text appears below the action in
+   a block labeled "Agent's description (not verified)", in `--ag-text-muted`, as inert text,
+   collapsed past three lines. It never replaces or sits above the action and is never styled like a
+   system message.
 4. **Actions:** buttons per §5.3.
 
-Untrusted-string handling applies to all of the above: no markdown, no links activated (URLs are
-displayed text, not anchors), no images, no HTML. An approval card cannot be restyled by content.
+**Display-safe text (applies to every untrusted string that reaches a human).** This covers the
+action fields above, `tool` names, server names, paths, cwd, URLs, env keys and values, JSON keys and
+values, `contextItems` labels, and the text of main's native dialogs. One function in `core`
+implements it so main and the renderer cannot drift. It never interprets markup, and:
+
+- Always escapes to a visible `⟦U+XXXX⟧` marker: control characters (Cc), format characters (Cf),
+  bidirectional controls, Default_Ignorable code points, tag characters and U+FEFF. A marker line
+  states "This text contains N hidden characters".
+- Does not escape all non-ASCII, which would break legitimate paths. Instead it flags a token that
+  mixes scripts or is a confusable per UTS #39 with a "Possible look-alike characters" chip.
+- Makes layout padding visible: runs of more than 3 consecutive blank lines or more than 8
+  consecutive spaces collapse to an explicit marker (`⟦…180 blank lines…⟧`, `⟦…40 spaces…⟧`), and tabs
+  render as a visible glyph. Collapsing replaces content with a marker that states what was
+  removed; nothing is silently dropped.
+- Wraps without truncation. The action block has a maximum height; when it overflows it shows a
+  persistent "N more lines below" indicator and a **Show all** control that expands it in place.
+  **While the block overflows and has not been expanded or scrolled to its end, the allow buttons
+  stay in their armed-off state (§5.3)**, so the dangerous tail of a long command cannot be missed
+  by approving the visible head. Deny is never held back.
 
 ### 5.3 Decisions
 
 | Button | Meaning | Offered when |
 |---|---|---|
-| **Deny** | Reject this action; the agent is told it was denied | Always. Default focus. |
-| **Allow once** | Approve exactly this single call | Always, unless main offers deny-only |
-| **Allow this session** | Approve this **exact** action again until the app session ends, no wider | Only if main marks the request session-grantable, see §5.4 |
+| **Deny** | Reject this action; the agent is told it was denied | Always (`offered` always includes it). Default focus |
+| **Allow once** | Approve exactly this single call | Only if `offered` includes `once` |
+| **Allow this session** | Approve this action again until the app session ends, scoped as §5.4 states | Only if `offered` includes `session` |
 
 - Button order, left to right: **Deny**, **Allow once**, **Allow this session**. Deny is first in
-  reading and tab order and takes initial focus; allow actions are visually distinct but not
-  more prominent than Deny (no hero-colored "Allow").
-- Keyboard: `Tab` order as above; `Escape` = Deny. `Enter` activates only the focused button. There
-  are no single-key accelerators for Allow (no `Y`, no `Cmd+Enter` approve) so a stray keypress
-  cannot approve. Deny needs no extra accelerator: it holds initial focus and `Escape`.
-- **Typing-ahead guard:** a prompt that appears while the user is typing or pressing keys must not
-  be approvable by those keystrokes. The dock does not steal focus from the composer or the
-  editor (see §5.5) and, once focused, ignores activation events for the first 400ms after it
-  receives focus (the buttons are not `disabled`, so assistive tech is unaffected; the guard is in
-  the activation handler and covered by a test with fake timers).
+  reading and tab order and holds initial focus when focus is moved to the card; allow actions are
+  visually distinct but not more prominent than Deny (no hero-colored "Allow").
+- Keyboard: `Tab` order as above; `Escape` = Deny. `Enter`/`Space` activate only the focused
+  button. There are no single-key accelerators for Allow (no `Y`, no `Cmd+Enter` approve).
+- **Activation guard (time- and state-based, not focus-based).** An accidental approval is caused by
+  an input that was in flight when the card appeared or changed, not by where focus is. The guard
+  is on the allow buttons only; Deny and `Escape` are never delayed.
+  1. Each request mounts a **fresh card keyed by `approvalId`**, with new DOM buttons. After a
+     decision, the next queued request mounts new buttons. Nothing is reused.
+  2. A single `canActivate(event)` gates every allow activation, whether by click, pointer, key or
+     programmatic `click()`. It is false until **all** hold:
+     - at least 400 ms have passed since the card was *armed*;
+     - the window is focused and visible;
+     - the action block is not overflowing, or has been expanded or scrolled to its end (§5.2);
+     - for keyboard: the originating `keydown` happened after arming and is not a repeat
+       (`KeyboardEvent.repeat` is ignored), so a held Enter cannot walk through a queue;
+     - for pointer: both `pointerdown` and `pointerup` happened after arming and on the same button,
+       so a click that began before the card moved under the cursor does nothing.
+  3. **Arming happens, and re-happens, on**: the card first being rendered and visible; any change to
+     the dock or action-block geometry (resize, panel expand or collapse, "Show all", content change);
+     a change to `offered`; the window regaining focus or becoming visible; and queue advance.
+  4. While not armed, the allow buttons carry `aria-disabled="true"` and a visible dimmed style, so
+     assistive technology and pointer users see the same state; they remain focusable. There is no
+     animation (reduced-motion safe).
 - The decision button is disabled while submitting; a second activation is ignored (no double
-  resolution). If main reports the request is no longer pending (run stopped, already resolved),
-  the card shows that state and dismisses itself; it never shows a stale actionable prompt.
+  resolution). If main reports `no_longer_pending`, the card shows that state and dismisses itself.
+  An `invalid_input` (a decision not in `offered`) keeps the card and shows an error.
 
 ### 5.4 "Allow this session" semantics
 
-- The grant is scoped to the **exact action** shown: for shell, the exact command string + cwd;
-  for files, tool + operation + resolved path; for network, method + exact URL; for MCP, server +
-  tool + exact argument values. Not the tool, not a directory, not a prefix, not a pattern.
-- The label states the scope in words, e.g. "Allow this exact command for this session", and the
-  scope is repeated under the button in plain text so it cannot be misread.
-- Lifetime is the app session only; nothing is written to disk by this button. Persistent rules
-  are made in the permission rules editor (Settings), as explicit, exact rules the user types and
-  reviews, which is where `ARCHITECTURE.md` §8.4's "unless the user pinned an exact rule"
-  lives. The prompt never writes rules.
-- Whether a request is session-grantable is main's decision (e.g. destructive and network
-  commands and protected paths may be **deny / allow once only**). The UI renders only what is
-  offered and never infers a session option. A session grant is revocable from a "Session approvals"
-  list (Settings and agent panel menu) that shows each granted action literally with a Revoke
-  button.
+The contract's session grant (`docs/agent-contract.md` §2) is an in-memory exact-match rule, per
+workspace root, for the app session. The label must say what that match actually covers, because
+for some actions it is wider than "the thing you just saw":
+
+- **`fs_read`:** "Allow reading ⟨path⟩ for this session".
+- **`fs_write`:** the grant matches tool + operation + path and **not the content**. The label is
+  "Allow any changes to ⟨path⟩ for this session (not only this diff)", and the card shows it in
+  words under the button. This is deliberately not called "exact".
+- **`exec`:** "Allow this exact program and arguments in ⟨cwd⟩ for this session".
+- **`exec_shell`:** "Allow this exact command in ⟨cwd⟩ for this session".
+- **`mcp`:** "Allow ⟨server⟩/⟨tool⟩ with exactly this input for this session".
+- Lifetime is the app session only; nothing is written to disk by this button. Persistent rules are
+  made in the permission rules editor (§4.7), as explicit rules the user reviews, which is where
+  `ARCHITECTURE.md` §8.4's "unless the user pinned an exact rule" lives. The prompt never writes
+  rules.
+- Whether a session option is offered is main's decision and the UI never infers it. Elevated
+  actions (sensitive paths, omitted diffs, destructive or network `exec`, `network`) never offer it.
+  A session grant is revocable from the "Session approvals" list (§4.7).
 - Explicitly absent: allow-all, allow for tool, allow for workspace, allow in this folder, allow
   matching, "remember my choice", and any toggle that changes the policy from inside a prompt.
 
-### 5.5 Placement, focus and announcement
+### 5.5 Placement, focus, announcement, reload
 
 - The prompt is the **approval dock**: a non-modal card pinned directly above the composer in the
-  agent panel (not a modal dialog), so Stop, the transcript, and the editor stay usable and the
-  user can read the surrounding diff before deciding. It has `role="group"` named "Approval
-  needed", and `aria-describedby` pointing at the literal action block.
-- When a request arrives: a polite status line announces "Approval needed: <risk> <tool>", the
-  activity-bar Agent button gets an "approval pending" badge (a count with a text label, not a
-  color dot), and the OS window title gets a prefix (e.g. "● ") so a backgrounded window is
-  noticeable. If the agent panel is collapsed it is expanded (the user's layout choice is restored
-  afterward) because an unseen prompt is a stalled run.
-- Focus: moves to **Deny** only when focus is already inside the agent panel or on `body`.
-  Otherwise focus is not stolen (the typing-ahead rule), and `F6` or a labeled "Review approval"
-  command in the palette jumps to it. The composer is **not** disabled; sending a new message while
-  an approval is pending is allowed and does not resolve it.
-- Multiple requests (parallel read-only calls are not gated by the UI; parallel gated calls can
-  occur) are shown **one at a time in arrival order** with "1 of N", never merged into a single
-  "approve all N". Each decision is independent.
-- The decision is sent to main as a typed message carrying the request id and one of the offered
-  decisions; the renderer retains nothing about it beyond the transcript record ("Denied",
-  "Allowed once", "Allowed this session"), which is shown on the tool-call card.
+  agent panel, so Stop, the transcript and the editor stay usable and the user can read the
+  surrounding diff before deciding. It has `role="group"` named "Approval needed" and
+  `aria-describedby` pointing at the action block.
+- **The arrival of a request never moves focus.** Not from the composer, the editor, the terminal, or
+  anywhere else. Instead: a polite status line announces "Approval needed: ⟨risk⟩ ⟨tool⟩. Press F6
+  to review."; the activity-bar Agent button gets an "approval pending" badge (a count with a text
+  label, not a color dot); the OS window title gets a prefix (for example "● "); and `F6` or a
+  labeled "Review approval" palette command moves focus to the card, landing on **Deny**. A pointer
+  user clicks into the card.
+- If the agent panel is collapsed it is expanded because an unseen prompt is a stalled run. That is
+  a layout change, so the card re-arms (§5.3) and a click aimed at what was under the cursor cannot
+  reach an allow button.
+- **Queue.** Approvals in a run are presented one at a time in arrival order; "1 of N" counts pending
+  approvals in this window. They are never merged into "approve all N"; each decision is
+  independent.
+- **Reload and crash.** On a renderer reload, the UI subscribes first, buffers live events, then calls
+  `permissions.listPending`, `agent.listRuns` and `agent.replay`, then drains the buffer by `seq`.
+  Pending approvals reappear as fresh cards and re-arm. On a crash or close, main has already denied
+  and aborted (the window binding in `docs/agent-contract.md` §5).
+- **Fail closed.** If an `agent.approvalRequested` payload fails validation (an unknown `kind` from
+  version skew, or a malformed field) but carries a parseable `approvalId`, the UI answers
+  `permissions.respondApproval` with `deny` and shows "A request could not be displayed and was
+  denied." It never drops the event silently, which would stall the run.
+- The decision is sent as `{ approvalId, decision }` only. The renderer keeps the outcome only as the
+  transcript record ("Denied", "Allowed once", "Allowed this session", "Run stopped").
 
 ### 5.6 Required tests (acceptance for this flow)
 
-- Rendering: for each tool kind in §5.2, the literal action is present verbatim in the DOM text;
-  the model's description never appears above or in place of it.
-- Hostile content: command/path/URL/JSON strings containing `<script>`, `<img onerror>`, markdown
-  links, ANSI escapes, RTL override, zero-width and homoglyph characters render as inert text with
-  visible escapes; no element other than text nodes is created from them.
-- Buttons: only offered decisions render; no allow-all/“always”/pattern control exists in the
+- Rendering: for each `action.kind` in §5.2, every field is present verbatim (after the
+  display-safe function) in the DOM text; `description` never appears above or in place of the action.
+- Hostile content: strings containing `<script>`, `<img onerror>`, markdown links, ANSI escapes,
+  RTL overrides, zero-width characters, tag characters, mixed-script look-alikes, and 200 blank lines
+  or 500 spaces before a dangerous tail render as inert text with visible markers; no element other
+  than text nodes is created from them. The same corpus is run through every field, including
+  `tool`, MCP names, paths, URLs, env and JSON keys.
+- Long content: an overflowing command keeps the allow buttons unarmed until expanded or scrolled to
+  the end; Deny works throughout.
+- Buttons: only `offered` decisions render; no allow-all/"always"/pattern control exists in the
   component's API or DOM (a type-level and a runtime test).
-- Keyboard: initial focus is Deny; `Escape` denies; `Enter` on Deny denies; no key approves from a
-  non-focused state; activation within 400ms of focus is ignored; double activation resolves once.
-- Lifecycle: stop-run, renderer unmount, and main's "no longer pending" notification each result in
-  deny/dismiss and never a stale actionable card.
-- Queue: three queued requests show "1 of 3", resolve independently, in order.
-- A11y: axe-clean in light and dark; the literal action block is reachable and readable by name;
-  announcement text asserted via the live region.
+- Guard: a click 100 ms after the card appears does nothing; a `pointerdown` before arming with a
+  `pointerup` after does nothing; a held Enter (`repeat`) across a queue advance approves nothing;
+  an Enter keydown that began before the new card mounted does nothing; a click on window refocus does
+  nothing; a layout change re-arms; Deny and `Escape` work immediately in every case.
+- Focus: a request arriving while the composer, editor or terminal has focus does not change
+  `document.activeElement`.
+- Lifecycle: stop-run, `run_stopped`, and `no_longer_pending` each dismiss the card and never leave
+  a stale actionable one; a reload restores pending cards from `permissions.listPending`.
+- Fail closed: an unknown-kind payload with an `approvalId` produces a `deny` and a visible notice.
+- Queue: three pending approvals show "1 of 3", resolve independently, in order, each with fresh
+  buttons.
+- A11y: axe-clean in light and dark; the action block is reachable and readable by name; the
+  announcement text is asserted via the live region.
 
 ## 6. Renderer hardening and role-split readiness (D-010)
 
@@ -578,20 +788,24 @@ either is a configuration change, not a rewrite:
   UI half (view split, what each view may call, how focus and keyboard routing work across views)
   when the chief schedules it; this section is the constraint it must respect.
 
-## 7. Open questions for the chief
+## 7. Open questions
 
-The IPC the renderer needs is specified in `docs/ipc-channels.md`, which is where questions 1, 2
-and 4 are tracked. Remaining items, each blocking only the matching implementation step:
+Tracked with their owners in `docs/ipc-channels.md` §9. Each blocks only the matching implementation
+step:
 
-1. **`PermissionRequest` shape.** The structured, main-built `action` union agreed with the chief
-   covers command, write_file, read_sensitive, network and mcp. §5 additionally needs an
-   `offered` decisions set, a `context` line, resolved-path and operation fields, and a
-   classification; these are requested from ag-agent in `docs/ipc-channels.md` §5, not assumed.
-2. **Session grants and `ARCHITECTURE.md` §8.4.** "Allow this session" is a non-persistent,
-   exact-action grant that main may withhold (deny / allow once only) for destructive and network
-   commands and protected paths. The chief confirmed `'session'` creates an exact-match rule only;
-   whether it is offered for exec/network is main's decision, delivered through `offered`.
-3. **Theme bootstrap.** Direction agreed with the chief (argv via `additionalArguments`);
-   ag-foundation to confirm feasibility (`docs/ipc-channels.md` §9.5).
-4. **Stop shortcut.** `Cmd/Ctrl+Shift+Backspace` proposed; ag-agent to confirm
-   (`docs/ipc-channels.md` §9.6).
+1. **Display-safe function in `core`** (§5.2), shared by main's native dialogs and the renderer.
+2. **Main-mediated external link channel** (§6.1.4). None exists yet.
+3. **Session-grant identity** (§5.4): the contract's `exec` grant matches argv + cwd, which leaves out
+   `env`. Request: include `env` and the exec `class`, and clear grants on root change and on
+   `setTrust(false)`. Separately, whether `session` should be offered for writes at all is the
+   chief's call; I recommend keeping it only with the honest "any changes to ⟨path⟩" label.
+4. **Redacted env values**: a value the tool redacted is something the user approves without seeing.
+   Request: treat any redaction as elevated (no `session`), and label it in the card.
+5. **Undo and reload**: after `agent.undoRun`, a reload would rebuild the transcript from the replay
+   buffer and show the undone runs again. Request: `agent.listRuns` and `agent.replay` exclude (or
+   mark) undone runs.
+6. **Budget settings key**: the budgets are user-adjustable (`docs/agent-contract.md` §4); which
+   settings key holds them and that main reads it when starting a run.
+7. **D-010 isolation proposal** (joint with ag-foundation, due before M3): timing for my half.
+8. **Theme bootstrap**: ag-foundation to confirm the `additionalArguments` route
+   (`docs/ipc-channels.md` §9).
