@@ -44,3 +44,30 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
 - **Consequences:** a tool that forgets to call the gate is the main risk; mitigated by a shared
   tool conformance harness (fake gate asserting `check` precedes any mutation) and loop-side
   detection of write/exec/network tools completing without a recorded allow.
+
+## D-010 Renderer trust model: harden now, isolate before agent mode ships
+- **Status:** accepted (chief, 2026-10-11; raised by ag-reviewer in the ag-ui docs review)
+- **Context:** One renderer both displays untrusted model output and holds privileged capabilities
+  (`terminal.*`, `workspace.setTrust`, `permissions.respondApproval`/`addRule`, `auth.*`). A single
+  XSS in rendered markdown would give arbitrary execution and let the attacker approve their own
+  requests, so the permission gate is only as strong as the renderer. An integrated terminal is
+  arbitrary execution by design, so gating it is not the answer; isolating untrusted content is.
+- **Decision (now, M0–M2):**
+  1. Main shows a **native confirmation built from main's own data** for `workspace.setTrust(true)`
+     and for `permissions.addRule` with effect `allow` (error `user_declined` on refusal).
+  2. Renderer hardening invariants: strict CSP (no inline script, no `eval`), exactly one sanitizing
+     markdown component backed by an XSS-corpus test suite, no `dangerouslySetInnerHTML` elsewhere,
+     external links only through a main-mediated allowlist.
+  3. The IPC channel format supports a per-channel **sender allowlist** (`allowedSenders`, default
+     the primary app view) from day one, so a renderer split is a configuration change later.
+  4. `ARCHITECTURE.md` §8 and `docs/SECURITY.md` state the residual risk honestly: "the renderer
+     is untrusted" holds only while sanitization holds, until step 5 lands.
+- **Decision (design gate before M3):** ag-foundation and ag-ui deliver a proposal to isolate
+  untrusted-content rendering from privileged capabilities. Candidates: (a) separate `webContents`/
+  `WebContentsView`s by role (transcript view without `terminal.*`, `auth.*`, `permissions.*`,
+  `setTrust`; approvals in a small privileged view that renders structured data as inert text) or
+  (b) rendering model content in an opaque-origin sandboxed frame with a hash-pinned bootstrap.
+  The chief decides. **Agent mode does not ship until the chosen isolation is implemented or the
+  user explicitly accepts the residual risk.**
+- **Consequences:** a small cost now (two native dialogs, one IPC-format field); a real architecture
+  task before M3, tracked here.
