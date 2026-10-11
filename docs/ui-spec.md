@@ -485,7 +485,9 @@ run made no writes (`agent.undoRun` returns `not_found`).
 4. The dialog states that the workspace goes back to how it was before that message, that the
    conversation is cut at that message, and that this cannot be redone from AutoGeek yet.
 5. `conflict: run_active` disables the action with the reason "A run is active".
-6. On success the transcript is cut at that message locally.
+6. On success the transcript is cut at that message locally, and the undone runs are hidden by the
+   `undone` flag on `agent.listRuns`, so a reload does not bring them back (pending contract
+   amendment, `docs/ipc-channels.md` §5.3).
 
 "Review changes" for a run uses `agent.getRunDiff`: a virtualized file list (operation including
 `rename` with `from`; binary files labeled "Binary file"; `diffOmitted` shows path and size only)
@@ -497,7 +499,9 @@ with the diff for the selected file.
   (same renderer as §5.2) with **Revoke**. Revocation is immediate.
 - **Saved rules** (`permissions.listRules`, scope badge global/root) are created from a structured
   form per `match.kind`, never from free text interpreted as a pattern: exact path, path glob,
-  exact argv, argv prefix, exact shell string, exact URL, MCP server/tool/input. The `any` match is
+  exact argv, argv prefix, exact shell string, exact URL, MCP server/tool/input. A rule of kind
+  `argv`, `argv_prefix` or `shell` never matches a request that carries env overrides, and the form
+  says so. The `any` match is
   offered only for `deny` and `ask`. The form states what the contract guarantees: a broad allow
   never silently auto-allows a sensitive or otherwise elevated action; those still ask.
 - **Adding an `allow` rule** calls `permissions.addRule`; main shows its own native confirmation that
@@ -553,6 +557,10 @@ A prompt is one card (the **approval dock**, §5.5) containing, top to bottom:
 2. **The action**, by `action.kind`, in `--ag-font-mono` / `mono-md`, in a bordered block with its
    own label, as text through the display-safe function below:
    - **`exec_shell`:** the exact command string and cwd, plus env overrides. Labeled "Shell command".
+     Each env entry is shown as `KEY=value`; a redacted value is shown as `KEY=⟦redacted⟧` with a
+     chip "Some values are hidden", because the user is approving something they cannot see. Any
+     redaction makes the action elevated, so no `session` option is offered (pending contract
+     amendment, `docs/ipc-channels.md` §5.3).
    - **`exec`:** the argv list, one element per line with its index and visible quotes (`[0] "npm"`,
      `[1] "test"`, an empty element as `""`), so a space inside an element is not read as two
      arguments; cwd; the class as a chip; env. Labeled "Program and arguments". The two forms are
@@ -584,7 +592,7 @@ A prompt is one card (the **approval dock**, §5.5) containing, top to bottom:
 **Display-safe text (applies to every untrusted string that reaches a human).** This covers the
 action fields above, `tool` names, server names, paths, cwd, URLs, env keys and values, JSON keys and
 values, `contextItems` labels, and the text of main's native dialogs. One function in `core`
-implements it so main and the renderer cannot drift. It never interprets markup, and:
+implements it so main and the renderer cannot drift; it is specified, with test vectors, in §8. It never interprets markup, and:
 
 - Always escapes to a visible `⟦U+XXXX⟧` marker: control characters (Cc), format characters (Cf),
   bidirectional controls, Default_Ignorable code points, tag characters and U+FEFF. A marker line
@@ -646,8 +654,12 @@ for some actions it is wider than "the thing you just saw":
 
 - **`fs_read`:** "Allow reading ⟨path⟩ for this session".
 - **`fs_write`:** the grant matches tool + operation + path and **not the content**. The label is
-  "Allow any changes to ⟨path⟩ for this session (not only this diff)", and the card shows it in
-  words under the button. This is deliberately not called "exact".
+  "Allow any changes to ⟨path⟩ for this session. This also covers content you have not seen.", and
+  the same sentence is shown in words under the button. This is deliberately not called "exact". It
+  is offered for in-root, non-sensitive writes (the chief's decision: without it, multi-edit tasks
+  drown the user in prompts). Files that can execute code when touched (`.git/**`,
+  `.github/workflows/**`, `.husky/**`, `.envrc`, shell rc files and similar) are classified
+  sensitive by ag-workspace, so they are elevated and never offer `session`.
 - **`exec`:** "Allow this exact program and arguments in ⟨cwd⟩ for this session".
 - **`exec_shell`:** "Allow this exact command in ⟨cwd⟩ for this session".
 - **`mcp`:** "Allow ⟨server⟩/⟨tool⟩ with exactly this input for this session".
@@ -741,15 +753,16 @@ shaped so privileged capabilities can later move out of the view that renders mo
    tested through the real `eslint` CLI with the circumventions that would be tried (spread props
    carrying the attribute, a ref plus assignment, an alias import), per L-003. A violation fails
    `pnpm verify`; there is no suppression path.
-4. **External links go through main.** A link is rendered as text with a "copy" action, and the
-   open action asks main to open it after validating the scheme (`https:` only) against an
-   allowlist or a native confirmation. `target="_blank"`, `window.open` and in-renderer navigation
-   are never used (`ARCHITECTURE.md` §8.1). This needs a channel that does not exist yet; it is
-   requested in `docs/ipc-channels.md` §9, not assumed.
+4. **External links go through main.** A link is rendered with its URL visible (the link text never
+   hides the destination) and a "copy" action. The open action calls `app.openExternal { url }`
+   (`docs/ipc-channels.md` §7.1): http and https only, always a native confirmation that shows the
+   exact normalized URL through the display-safe function, no "remember this site", and no
+   renderer-supplied trust flag. `target="_blank"`, `window.open` and in-renderer navigation are
+   never used (`ARCHITECTURE.md` §8.1).
 5. **One display-safe string function** for every untrusted string that reaches a human (§5.2):
    action fields, tool and server names, paths, URLs, env, JSON keys and values, and the text of
-   native dialogs. Native dialogs are built in main, so the function must live in `core` and be
-   imported by both sides (requested in `docs/ipc-channels.md` §9).
+   native dialogs. Native dialogs are built in main, so the function lives in `core` and both sides
+   import it. It is specified, with test vectors, in §8.
 
 ### 6.2 Residual risk, stated plainly
 
@@ -791,21 +804,146 @@ either is a configuration change, not a rewrite:
 ## 7. Open questions
 
 Tracked with their owners in `docs/ipc-channels.md` §9. Each blocks only the matching implementation
-step:
+step. Decided by the chief and recorded as such: session grants for in-root, non-sensitive writes stay
+(with the honest label, §5.4; ag-workspace classifies code-execution vectors as sensitive); the
+display-safe function is a `core` export specified in §8 (ag-foundation implements, ag-reviewer
+reviews); `app.openExternal` is the external-link channel (`docs/ipc-channels.md` §7.1); the D-010
+isolation proposal starts with M2 and is decided before M3.
 
-1. **Display-safe function in `core`** (§5.2), shared by main's native dialogs and the renderer.
-2. **Main-mediated external link channel** (§6.1.4). None exists yet.
-3. **Session-grant identity** (§5.4): the contract's `exec` grant matches argv + cwd, which leaves out
-   `env`. Request: include `env` and the exec `class`, and clear grants on root change and on
-   `setTrust(false)`. Separately, whether `session` should be offered for writes at all is the
-   chief's call; I recommend keeping it only with the honest "any changes to ⟨path⟩" label.
-4. **Redacted env values**: a value the tool redacted is something the user approves without seeing.
+1. **Session-grant identity** (§5.4): the contract's `exec` grant matches argv + cwd, which leaves out
+   `env`. Request to ag-agent: include `env` and the exec `class`, key by the workspace-root realpath,
+   and clear grants on root change and on `setTrust(false)`.
+2. **Redacted env values**: a value the tool redacted is something the user approves without seeing.
    Request: treat any redaction as elevated (no `session`), and label it in the card.
-5. **Undo and reload**: after `agent.undoRun`, a reload would rebuild the transcript from the replay
+3. **Undo and reload**: after `agent.undoRun`, a reload would rebuild the transcript from the replay
    buffer and show the undone runs again. Request: `agent.listRuns` and `agent.replay` exclude (or
    mark) undone runs.
-6. **Budget settings key**: the budgets are user-adjustable (`docs/agent-contract.md` §4); which
-   settings key holds them and that main reads it when starting a run.
-7. **D-010 isolation proposal** (joint with ag-foundation, due before M3): timing for my half.
-8. **Theme bootstrap**: ag-foundation to confirm the `additionalArguments` route
-   (`docs/ipc-channels.md` §9).
+4. **Budget settings key**: the budgets are user-adjustable (`docs/agent-contract.md` §4); which
+   settings key holds them and that main reads it when starting a run (drafted as `agent.budgets`).
+5. **Theme bootstrap**: ag-foundation to confirm the `additionalArguments` route
+   (`docs/ipc-channels.md` §9.6).
+
+## 8. Display-safe text function (spec and test vectors)
+
+One pure function in `@autogeek/core`, used by the renderer and by main's native dialogs. ag-foundation
+implements it, ag-reviewer reviews it, and this section is its specification. It exists because the
+approval prompt, trust prompt, rule confirmation, protected-path confirmation and external-link
+confirmation all show strings that a model, a file, a server or a web page controlled, and a human
+decides on what they see.
+
+### 8.1 Contract
+
+```ts
+interface DisplaySafeOptions {
+  mode: 'block' | 'inline' | 'dialog';   // block: unlimited, multi-line. inline: one line, bounded.
+                                         // dialog: bounded; exceeding the bound is refused, never cut
+  maxChars?: number;                     // code points. inline default 256; dialog default 2_000; block none
+}
+type Segment =
+  | { kind: 'text'; text: string }                       // contains no always-escaped code point
+  | { kind: 'escape'; codePoint: number }                // rendered as ⟦U+XXXX⟧ (hex, upper case, ≥ 4 digits)
+  | { kind: 'tab' }                                      // rendered as ⟦TAB⟧
+  | { kind: 'collapsed'; what: 'blank_lines' | 'spaces'; count: number }
+  | { kind: 'omitted'; chars: number };                  // inline only: ⟦…N more characters…⟧
+interface DisplaySafe {
+  segments: Segment[];
+  plain: string;                                         // the same content as one string, markers inline (for native dialogs)
+  stats: { chars: number; lines: number; hidden: number; truncated: boolean };
+  flags: { mixedScript: boolean; confusable: boolean };
+  flagged: Array<[start: number, end: number]>;          // code-point ranges of tokens that set a flag
+}
+declare function displaySafe(input: string, options: DisplaySafeOptions): Result<DisplaySafe, 'too_long'>;
+```
+
+It never changes the characters it keeps (no case folding, no normalization), so what is shown is what
+will be used. It is total (any string, including lone surrogates), deterministic (no locale, no
+runtime-dependent Unicode data) and linear time.
+
+### 8.2 Rules, in order
+
+1. **Always escape** these code points as `⟦U+XXXX⟧`: general categories Cc (except `\n` and `\t`,
+   below), Cf, Cs (lone surrogates), Co and Cn (unassigned); noncharacters (`U+FDD0..FDEF`,
+   `U+xxFFFE/xxFFFF`); the Default_Ignorable_Code_Point set (includes soft hyphen, combining grapheme
+   joiner, variation selectors, Hangul fillers, Mongolian free variation selectors); bidirectional
+   controls (`U+061C`, `U+200E/200F`, `U+202A..202E`, `U+2066..2069`); zero-width characters
+   (`U+200B..200D`, `U+2060..2064`, `U+FEFF`); tag characters (`U+E0000..E007F`); the line and
+   paragraph separators `U+2028/2029`; and **every space separator (Zs) except `U+0020`** (NBSP,
+   `U+2000..200A`, `U+202F`, `U+205F`, `U+3000`, `U+1680`), because an NBSP inside a shell command is
+   not a word break even though it looks like one.
+2. **Escape the marker characters themselves**: `⟦` (`U+27E6`) and `⟧` (`U+27E7`) in the input are
+   escaped, so input cannot imitate a marker.
+3. **Line breaks:** `\n` is a line break and `\r\n` is normalized to `\n`. A lone `\r` is escaped.
+   `\t` becomes a `tab` segment.
+4. **Collapse padding:** a run of more than 8 consecutive `U+0020` becomes one `collapsed spaces`
+   segment with the count, and a run of more than 3 consecutive blank lines (empty or spaces only)
+   becomes one `collapsed blank_lines` segment on its own line. Runs at or under the limits are
+   kept as they are. Nothing is dropped without a marker that states how much.
+5. **Bounds:** in `inline` mode, beyond `maxChars` the rest becomes one `omitted` segment with the
+   count. In `dialog` mode, beyond `maxChars` the function returns `too_long`; the caller refuses the
+   operation, because a native dialog cannot scroll and a truncated dialog hides the tail. `block` mode
+   is never cut; the UI handles overflow (`§5.2`).
+6. **Flags (not edits).** Tokenize on whitespace, path separators `/` and `\`, and ASCII punctuation.
+   For each token, using the Script_Extensions property and ignoring Common and Inherited:
+   `mixedScript` is set when more than one script remains, except the UTS #39 Highly Restrictive
+   allowances (Latin with Han, Hiragana, Katakana, Bopomofo or Hangul in their usual combinations).
+   `confusable` is set when the token contains non-ASCII characters and its UTS #39 *skeleton* is
+   entirely ASCII (a token that renders like ASCII but is not). The UI shows a "Possible look-alike
+   characters" chip and highlights `flagged` ranges. Tokens that merely contain legitimate
+   non-ASCII text are not flagged.
+7. **Unicode data is pinned**, not read from the runtime. The tables for rules 1 and 6 are generated by
+   a checked-in script from a named Unicode version and committed with a test that regenerates them
+   and compares. Main (Node) and the renderer (Chromium) therefore classify identically even when
+   their runtimes differ. No new runtime dependency is needed.
+
+Trade-off, stated: the Default_Ignorable and Cf rules also escape the zero-width joiner and
+`U+FE0F` that legitimate emoji sequences use. In a security prompt, seeing `⟦U+200D⟧` inside an emoji
+is acceptable; hiding it is not.
+
+### 8.3 Test vectors
+
+Input shown with escapes; expected `plain` (and flags) on the right.
+
+| Input | Expected `plain` | Notes |
+|---|---|---|
+| `ls` | `ls` | unchanged, `hidden: 0` |
+| `a‮b` | `a⟦U+202E⟧b` | bidi override |
+| `x​y` | `x⟦U+200B⟧y` | zero-width space |
+| `rm -rf` | `rm⟦U+00A0⟧-rf` | NBSP is not a word break |
+| `a\u0007b` | `a⟦U+0007⟧b` | control |
+| `e\u{E0041}` | `e⟦U+E0041⟧` | tag character |
+| `﻿foo` | `⟦U+FEFF⟧foo` | BOM |
+| `\uD800` | `⟦U+D800⟧` | lone surrogate |
+| `͸` | `⟦U+0378⟧` | unassigned |
+| `` | `⟦U+E000⟧` | private use |
+| `￿` | `⟦U+FFFF⟧` | noncharacter |
+| `a b` | `a⟦U+2028⟧b` | line separator |
+| `a͏b` | `a⟦U+034F⟧b` | combining grapheme joiner |
+| `a\tb` | `a⟦TAB⟧b` | |
+| `a\rb` | `a⟦U+000D⟧b` | lone CR |
+| `a\r\nb` | `a\nb` | CRLF normalized |
+| `⟦U+202E⟧` (literal text) | `⟦U+27E6⟧U+202E⟦U+27E7⟧` | cannot imitate a marker |
+| `ls` + 5 blank lines + `; curl x` | `ls\n⟦…5 blank lines…⟧\n; curl x` | padding exposed |
+| `ls` + 3 blank lines + `; curl x` | unchanged | at the limit |
+| `a` + 20 spaces + `b` | `a⟦…20 spaces…⟧b` | |
+| `a` + 8 spaces + `b` | unchanged | at the limit |
+| `❤️` | `❤⟦U+FE0F⟧` | emoji selector escaped (trade-off above) |
+| `pаypal` (Cyrillic а) | text unchanged, `mixedScript`, `confusable`; `flagged [[0,6]]` | mixed-script look-alike |
+| `ѕсоре` ("ѕсоре") | unchanged, `confusable` | whole-script look-alike of `scope` |
+| `naïve.txt`, `résumé`, `Привет`, `日本語/ファイル.ts` | unchanged, no flags | legitimate non-ASCII |
+| 300 × `a`, `inline`, `maxChars: 256` | 256 `a` + `⟦…44 more characters…⟧`, `truncated` | |
+| 2_500 × `a`, `dialog` | `Result` error `too_long` | refused, never cut |
+
+### 8.4 Property tests
+
+For arbitrary strings (including lone surrogates and long runs):
+
+- **No silent loss:** the sum of the code points in `text` segments, one per `escape` and `tab`
+  segment, and the counts in `collapsed` and `omitted` segments equals the input's code-point count
+  (accounting for CRLF normalization).
+- **Clean output:** no `text` segment contains an always-escaped code point or `⟦`/`⟧`.
+- **Idempotent on its own text:** running the function over the concatenated `text` segments returns
+  the same text segments.
+- **Totality and bounds:** it never throws, and runs in time linear in the input (checked on a 1 MiB
+  input).
+- **Parity:** the main-process and renderer builds return the same `plain` for a fixed corpus of
+  10,000 generated strings.
