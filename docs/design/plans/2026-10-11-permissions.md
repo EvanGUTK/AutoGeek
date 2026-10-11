@@ -61,6 +61,12 @@ The contract wins on any difference.
   - the predicate is the injected core port `ExecVectorClassifier` (ag-workspace's table);
   - a throw counts as an exec vector, plus a warning;
   - no classifier, no gate.
+- **Work-tree mutation (chief ruling):** when a started call of a tool that declares
+  `mutatesWorkTree: true` settles in any way, the agent calls `gate.noteWorkTreeMutated(...)`:
+  - that call clears the root's exec / exec_shell grants;
+  - it is audited as `grants_cleared` with reason `work_tree_mutated`;
+  - a call that's rejected or skipped (never started) doesn't clear;
+  - arbitrary exec / exec_shell **never** clears, because that would nullify exec grants.
 - **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through the core
   port `EnvKeyClassifier`, which ag-agent defines in core in Task 0. The chief granted edit
   rights to that one file plus its one registration line. The classifier is never optional:
@@ -123,11 +129,15 @@ Nothing else in core is touched.
   invariants live in tested core code, not in each implementation.
 
 - Also produces (second file, `src/ports/exec-vector-classifier.ts`, one more export line):
-  `interface ExecVectorClassifier { isExecVector(rootRelativePath: string): boolean }`.
+  `interface ExecVectorClassifier { isExecVector(canonicalRelativePath: string): boolean }`.
   The doc comment, as agreed with ag-workspace:
   - input is POSIX, root-relative, with no leading `./`;
-  - matching is case-INSENSITIVE, because more matches means more clearing, which is safer;
-  - anything not classified with confidence ⇒ `true`.
+  - matching is anchored-pattern and case-INSENSITIVE (ASCII fold plus NFC/NFD), because more
+    matches means more clearing, which is safer;
+  - **malformed input** (empty, absolute, `..`, NUL, backslash, leading `./`, over the cap) ⇒
+    `true`;
+  - **valid unmatched paths ⇒ `false`**, so ordinary source and test edits never clear;
+  - it never throws on a string.
 
   This is an interface only. ag-workspace's tests own the table, and core has no runtime code
   for it.
@@ -148,7 +158,12 @@ Nothing else in core is touched.
   ag-agent asks ag-workspace to add it when the list lands. Before slice 1's second review
   request, check that it exists.
 - [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`, then
-  `feat(core): add ExecVectorClassifier port` (a separate atomic commit). The body
+  `feat(core): add ExecVectorClassifier port` (a separate atomic commit).
+- **Third core change (chief-granted, agreed with ag-workspace):** add `mutatesWorkTree` to
+  core's `Tool` metadata. It's `readonly mutatesWorkTree: boolean`, required unless the chief
+  insists on optional-with-default-false, so no tool can forget it. Doc comment: "true iff
+  running this tool can rewrite tracked files without an fs_write gate check (git work-tree
+  operations)". Commit `feat(core): add mutatesWorkTree to tool metadata`. The body
   cites the chief's grant (edit rights to this file only) and L-005.
 
 ### Task 1: Package scaffold and pure helpers
@@ -317,6 +332,7 @@ Semantics:
     - network: never a grant, so throw a programmer error.
   - `createSessionGrantStore(deps: { clock: () => number; newId: () => string }): SessionGrantStore`
   - `interface SessionGrantStore extends SessionGrantMatcher { grant(rootKey: string, req: PermissionRequest): SessionGrant; list(rootKey: string): readonly SessionGrant[]; revoke(id: string): boolean; clear(rootKey: string): readonly SessionGrant[]; clearExec(rootKey: string): readonly SessionGrant[] }`.
+    (`clearExec` serves both exec-vector writes and work-tree mutation.)
     `clear` and `clearExec` return the removed grants so the caller can audit them. `clearExec`
     removes only `exec` / `exec_shell` grants.
   - `interface SessionGrant { id: string; rootKey: string; key: string; tool: string; action: PermissionAction; createdAt: number }`
@@ -346,7 +362,7 @@ alongside.
     `Bearer\s+\S+`, `sk-[A-Za-z0-9_-]{16,}`, `gh[pousr]_[A-Za-z0-9]{20,}`, `AKIA[0-9A-Z]{16}`,
     `(?i)(password|passwd|secret|token|api[_-]?key)=[^\s&]+`, `xox[baprs]-[A-Za-z0-9-]{10,}`.
     If foundation ships a core redactor, use it instead and delete this file.
-  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write'; count: number })`
+  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write' | 'work_tree_mutated'; count: number })`
   - `toAuditAction(action: PermissionAction): AuditAction`: `diff` is replaced by
     `diffBytes: number`. Every plain `env` value, `command`, `argv` element and `url` goes through
     `redactSecrets`. `{kind:'redacted'}` env values stay as they are.
@@ -404,7 +420,10 @@ alongside.
   - `interface Approver { request(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalOption> }`
   - `interface ApprovalPrompt { approvalId: string; request: PermissionRequest; offered: readonly ApprovalOption[] }`
   - `interface DetailedDecision { decision: PermissionDecision; via: DecisionVia; ruleId?: string }`
-  - `interface DetailedPermissionGate { checkDetailed(req: PermissionRequest, signal: AbortSignal): Promise<DetailedDecision> }`
+  - `interface DetailedPermissionGate { checkDetailed(req: PermissionRequest, signal: AbortSignal): Promise<DetailedDecision>; noteWorkTreeMutated(info: { tool: string; provenance: PermissionRequest['provenance'] }): Promise<void> }`.
+    `noteWorkTreeMutated` clears the current root's exec grants and audits `work_tree_mutated`.
+    It never throws: an audit failure is reported through `onWarning`, because the grants are
+    already cleared, which is the safe state.
   - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; env: EnvKeyClassifier; execVectors: ExecVectorClassifier; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
 
 `createPermissionGate` throws a `TypeError` when `deps.env?.isBenign` or
@@ -499,7 +518,15 @@ owner of each run.
     - grant → approved write to `src/a.ts` → still allowed via `session_grant`;
     - a write to `package.json` under root A leaves root B's exec grants intact;
     - fs and mcp grants survive an exec-vector write;
-    - a classifier that throws clears (fail closed).
+    - a classifier that throws clears (fail closed);
+    - write, delete and rename (source and destination) each clear when they touch an exec
+      vector.
+  - `work-tree mutation re-arms exec approvals` (chief):
+    - grant → `noteWorkTreeMutated` → the same exec asks again;
+    - per root only;
+    - fs and mcp grants survive.
+    (That rejected or skipped calls don't trigger it, and that arbitrary exec never clears,
+    are loop-side tests in the loop plan's Task 9.)
   - `nothing is allowed without an affirmative allow`: every `allow` has via `rule`,
     `session_grant`, `baseline` or `user_once`/`user_session`, and an audit entry.
   - `index exports only the public surface`: an `Object.keys(await import('./index'))` snapshot.

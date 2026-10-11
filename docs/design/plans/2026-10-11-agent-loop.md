@@ -385,7 +385,17 @@ Rules:
   - the outcome is `gate_violation`;
   - the audit happens through the driver's `audit` dep (add `audit: AuditSink` to `LoopDeps`).
 
+- **Work-tree mutation (chief ruling):** when a call whose tool declares
+  `mutatesWorkTree: true` has started (`tool_started` emitted) and then settles or is
+  interrupted, the reducer emits command `{ type: 'note_work_tree_mutated'; callId }`. The
+  driver calls `gate.noteWorkTreeMutated({ tool, provenance })`. Rejected or skipped calls never
+  emit it, and neither does any other tool, arbitrary exec included.
 - [ ] **Step 1: Write the failing tests** (Review Focus 5):
+  - `mutatesWorkTree tool re-arms exec approvals`: grant an exec → a git-checkout fake tool with
+    `mutatesWorkTree: true` runs (any result, including a thrown error) → the same exec asks
+    again;
+  - `rejected mutatesWorkTree call does not clear`;
+  - `plain exec never clears exec grants`;
   - three malformed steps → `invalid_tool_calls`;
   - a `read → edit → read` sequence doesn't trip loop detection;
   - three identical pairs → `loop_detected`;
