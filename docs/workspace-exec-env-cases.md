@@ -12,16 +12,29 @@ dangerous names and gives the prompt a reason code. It is not what makes them el
 
 ```ts
 classifyExecEnv(env: Record<string, string>, platform: NodeJS.Platform):
-  { benign: true }
-  | { benign: false; offending: Array<{ key: string; reason: EnvReason }> }
-type EnvReason = 'invalid_key' | 'invalid_value' | 'duplicate_key' | 'loader_injection'
-  | 'interpreter_options' | 'search_path' | 'git' | 'proxy' | 'credential_shaped' | 'unknown_key'
+  | { outcome: 'refuse'; problems: Array<{ key: string; reason: RefuseReason }> }
+  | { outcome: 'benign' }
+  | { outcome: 'elevate'; offending: Array<{ key: string; reason: ElevateReason }> }
+type RefuseReason = 'invalid_key' | 'invalid_value' | 'duplicate_key'
+type ElevateReason = 'loader_injection' | 'interpreter_options' | 'search_path' | 'git' | 'proxy'
+  | 'credential_shaped' | 'unknown_key'
 ```
 
-Redaction is separate and structural: the tool builds each entry as `EnvValue`
-(`redacted` or `plain`) from the same classification, so a value is `plain` only for a benign
-key. Every non-benign value is `redacted` in the prompt and in events. A pure function of its
-inputs; no reading of `process.env`.
+Three outcomes (settled with ag-agent):
+- **refuse:** the env is malformed, meaning a bad key, a value that fails its rule on an allowlisted
+  key, or a win32 case-duplicate. The tool returns a typed error result to the model **before any
+  gate check**, with a precise message such as `env NODE_ENV: value rejected (reason:
+  invalid_value); run without it or use a plain value`. No prompt, no effect, and the model can
+  correct itself. This fails closed.
+- **benign:** every key is on the allowlist with a valid value. The request is not elevated by env.
+- **elevate:** a well-formed env with at least one key off the allowlist. The gate sees the literal
+  action and always prompts; the reason code is for the prompt text.
+
+Redaction stays separate and structural, and means only "a secret the user must not see": the tool
+builds each entry as `EnvValue` (`redacted` or `plain`), and a value is `redacted` only when its key
+is `credential_shaped`. Every other value is shown plain and literal in the prompt, including
+the value of an elevated key such as `NODE_OPTIONS`, so the user sees what they approve. A pure
+function of its inputs; no reading of `process.env`.
 
 ## 1. Allowlist (exact names, case-sensitive on posix)
 
@@ -43,7 +56,7 @@ inputs; no reading of `process.env`.
 
 `token` means `^[A-Za-z0-9_.@+-]{0,64}$`: no whitespace, quotes, `$`, `` ` ``, `;`, `/`, `\`,
 `:`, NUL or newline. The locale token also allows `=`-free forms like `en_US.UTF-8@euro`. Any value
-that fails its rule gives `invalid_value`, and the whole request is elevated. The allowlist stays
+that fails its rule gives `invalid_value`, and the whole call is refused. The allowlist stays
 small on purpose: each added name needs a rationale and a test row. Proposed additions go through
 ag-reviewer.
 
@@ -57,8 +70,9 @@ The allowlist is wired through core's `createAllowlistEnvKeyClassifier(list)`, w
 `EnvKeyClassifier { isBenign(key) }`: case-sensitive exact match through a `Set` on every platform,
 and the factory rejects empty, over-long, NUL- or `=`-containing and prototype keys. That is the
 first gate. The value rules, the duplicate-key rule, and the reason codes below are a second layer
-in `classifyExecEnv`, which the tool uses to build each `EnvValue`. A value that fails its rule is
-treated as `redacted`, and any redacted or non-benign entry elevates the action in the gate.
+in `classifyExecEnv`, which the tool runs **before** the gate. A value that fails its rule is
+refused with a typed error (never hidden as `redacted`, since that marker is reserved for secrets and
+a hidden suspicious value would make the user approve blind). The gate stays key-only, as approved.
 
 Matching is ASCII-only. Never call `toUpperCase()`/`toLowerCase()` on a key. Locale-sensitive
 folding maps non-ASCII characters onto ASCII ones (`'ı'.toUpperCase() === 'I'`, so a Turkish dotless
@@ -111,14 +125,14 @@ unusual and still worth a prompt.
 | 4.9 | `{LD_PRELOAD:'/x.so'}`, `{DYLD_INSERT_LIBRARIES:'x'}`, `{DYLD_LIBRARY_PATH:'x'}`, `{LD_LIBRARY_PATH:'x'}` | all | `loader_injection` |
 | 4.10 | `{PATH:'/x'}` | posix | `search_path` |
 | 4.11 | `{Path:'C:\\x'}`, `{path:'x'}`, `{PATH:'x'}` | win32 | `search_path` for each |
-| 4.12 | `{Path:'x', PATH:'y'}` | win32 | `search_path` and `duplicate_key` |
+| 4.12 | `{Path:'x', PATH:'y'}` | win32 | refused: `duplicate_key` (refusal wins over elevation) |
 | 4.13 | `{Ci:'1'}` | posix | `unknown_key` |
 | 4.14 | `{Ci:'1'}` | win32 | `unknown_key` (case-sensitive allowlist, fails closed) |
-| 4.15 | `{CI:'1', Ci:'0'}` | win32 | `duplicate_key`, elevated |
+| 4.15 | `{CI:'1', Ci:'0'}` | win32 | `duplicate_key`, refused |
 | 4.16 | `{CI:'1', Ci:'0'}` | posix | `unknown_key` for `Ci` (distinct variable), `CI` ok |
-| 4.17 | `{'cı':'1'}` (dotless i), `{'ſ':'x'}`, `{'\u212A':'x'}` (Kelvin sign) | all | `invalid_key` (non-ASCII), never matched to an ASCII name |
-| 4.18 | `{'CI\u0000':'1'}`, `{'':'1'}`, `{'A=B':'1'}`, `{'A B':'1'}`, `{'A-B':'1'}`, `{'1A':'1'}` | all | `invalid_key` |
-| 4.19 | key of 129 characters | all | `invalid_key` |
+| 4.17 | `{'cı':'1'}` (dotless i), `{'ſ':'x'}`, `{'\u212A':'x'}` (Kelvin sign) | all | refused: `invalid_key` (non-ASCII), never matched to an ASCII name |
+| 4.18 | `{'CI\u0000':'1'}`, `{'':'1'}`, `{'A=B':'1'}`, `{'A B':'1'}`, `{'A-B':'1'}`, `{'1A':'1'}` | all | refused: `invalid_key` |
+| 4.19 | key of 129 characters | all | refused: `invalid_key` |
 | 4.20 | `{GIT_SSH_COMMAND:'x'}`, `{GIT_DIR:'x'}`, `{GIT_CONFIG_COUNT:'1'}`, `{git_exec_path:'x'}` | all | `git` |
 | 4.21 | `{BASH_ENV:'/x'}`, `{ENV:'/x'}`, `{PROMPT_COMMAND:'x'}`, `{IFS:'x'}` | all | `interpreter_options` |
 | 4.22 | `{PYTHONPATH:'x'}`, `{PYTHONSTARTUP:'x'}`, `{PYTHONHOME:'x'}`, `{PYTHONWARNINGS:'x'}` | all | `interpreter_options` |
@@ -126,18 +140,20 @@ unusual and still worth a prompt.
 | 4.24 | `{RUBYOPT:'-rx'}`, `{PERL5OPT:'-Mx'}`, `{JAVA_TOOL_OPTIONS:'-javaagent:x'}`, `{_JAVA_OPTIONS:'x'}` | all | `interpreter_options` |
 | 4.25 | `{HTTP_PROXY:'x'}`, `{https_proxy:'x'}`, `{ALL_PROXY:'x'}`, `{NO_PROXY:'x'}`, `{npm_config_proxy:'x'}` | all | `proxy` (the last also matches `NPM_CONFIG_*`; the first matching row wins and is documented in the test) |
 | 4.26 | `{GITHUB_TOKEN:'x'}`, `{MY_API_KEY:'x'}`, `{DB_PASSWORD:'x'}`, `{AWS_ACCESS_KEY_ID:'x'}`, `{SSH_AUTH_SOCK:'x'}` | all | `credential_shaped`; the values are `redacted` |
-| 4.27 | `{NODE_ENV:'test; rm -rf /'}`, `{NODE_ENV:'a b'}`, `{NODE_ENV:'$(x)'}`, `{NODE_ENV:'a\nb'}` | all | `invalid_value` |
+| 4.27 | `{NODE_ENV:'test; rm -rf /'}`, `{NODE_ENV:'a b'}`, `{NODE_ENV:'$(x)'}`, `{NODE_ENV:'a\nb'}` | all | refused: `invalid_value` |
 | 4.28 | `{NODE_ENV:''}` | all | benign (the empty value is a valid token) |
-| 4.29 | `{NODE_ENV: 'x'.repeat(65)}` | all | `invalid_value` |
-| 4.30 | `{TERM:'../../x'}`, `{TZ:'/etc/passwd'}`, `{TZ:':/x'}` | all | `invalid_value` |
-| 4.31 | `{FORCE_COLOR:'9'}`, `{COLUMNS:'abc'}`, `{COLUMNS:'12345'}` | all | `invalid_value` |
+| 4.29 | `{NODE_ENV: 'x'.repeat(65)}` | all | refused: `invalid_value` |
+| 4.30 | `{TERM:'../../x'}`, `{TZ:'/etc/passwd'}`, `{TZ:':/x'}` | all | refused: `invalid_value` |
+| 4.31 | `{FORCE_COLOR:'9'}`, `{COLUMNS:'abc'}`, `{COLUMNS:'12345'}` | all | refused: `invalid_value` |
 | 4.32 | `{CI:'1', FOO:'x'}` | all | not benign; `FOO` is `unknown_key`; `CI` is not listed as offending |
 | 4.33 | mixed: one benign key and one `GIT_DIR` | all | not benign for the whole request |
 | 4.34 | prototype-pollution keys: `__proto__`, `constructor`, `toString` | all | `unknown_key`; the classifier iterates with `Object.entries` on an own-property check and never reads `env[key]` for inherited names |
 | 4.35 | frozen vs mutable input | all | input is not mutated, output is a fresh object |
 | 4.36 | property test: for generated maps, `benign` implies every key's ASCII-fold is on the allowlist and every value matches its rule | all | holds |
 | 4.37 | property test: adding any key outside the allowlist to a benign map always makes it not benign | all | holds |
-| 4.38 | redaction: for each §4 row, `EnvValue` is `plain` iff the key is on the allowlist and its value is valid; a non-benign request never shows a `plain` value for an offending key | all | holds |
+| 4.38 | redaction: `EnvValue` is `redacted` iff the key is `credential_shaped`; every other value is `plain` and literal in the prompt (`NODE_OPTIONS` shows its value) | all | holds |
+| 4.38b | refusal harness: for every `refuse` row (4.12, 4.15, 4.17-4.19, 4.27-4.31), the conformance harness asserts the tool returns an error result, makes **zero** gate calls and causes **zero** effects, and the message names the key and reason code | all | holds |
+| 4.38c | an `invalid_value` on an allowlisted key is refused even when another key is elevated; refusal is decided first | all | holds |
 | 4.39 | `exec_shell` requests are always class `unknown` and always ask, so the env result adds a reason but never lowers the class | all | holds |
 | 4.40 | the allowlist and the never-benign table contain no key that the other table also matches differently (a test checks the two tables are disjoint) | all | holds |
 | 4.41 | no-drift: `createAllowlistEnvKeyClassifier(BENIGN_ENV_KEYS)` does not throw | all | holds (core cannot import this package, so this test lives here, next to the list) |
