@@ -418,9 +418,17 @@ alongside.
   - `describeRuleForConfirm(rule: PolicyRuleInput): string`: the literal rule, plus the exact
     contract phrases "Allow any command beginning with: " (`argv_prefix`, one element per line)
     and "with ANY input" (`mcp` without `input`). For `allow` rules of kind `argv`,
-    `argv_prefix` or `shell`, it adds the chief's exact line: "This rule keeps applying even if
-    scripts, Makefiles or package.json change".
+    `argv_prefix` or `shell`, it adds core's `PERSISTENT_EXEC_RULE_NOTICE` (Step 0 below). The
+    string is imported, never retyped, so main's confirm and the renderer's rule editor show one
+    string.
 
+- [ ] **Step 0: Core constant (chief-granted, relayed from ag-ui).**
+  - Create `packages/core/src/permissions/notices.ts` (its own file, plus one export line in
+    core's `index.ts`) with
+    `export const PERSISTENT_EXEC_RULE_NOTICE = 'This rule keeps applying even if scripts, Makefiles or package.json change' as const;`.
+  - Its test pins the exact string.
+  - Commit `feat(core): add the persistent exec-rule notice constant`. The body cites the
+    chief's grant and says ag-ui consumes the same constant.
 - [ ] **Step 1: Write the failing tests.**
   - round trip;
   - `scope` routes to global vs the root;
@@ -430,7 +438,8 @@ alongside.
   - a concurrent `add` doesn't lose a rule (serialized writes);
   - confirm-text snapshots for argv_prefix and mcp any-input;
   - `command allow rules warn that they survive script changes`: argv, argv_prefix and shell
-    allow rules contain the exact line, while deny/ask rules and path/url/mcp rules don't.
+    allow rules contain `PERSISTENT_EXEC_RULE_NOTICE` (asserted by importing the constant),
+    while deny/ask rules and path/url/mcp rules don't.
 - [ ] **Steps 2–4**, **Step 5: Commit** `feat(permissions): add userData rule store and confirm text`.
 
 ### Task 8: The gate
