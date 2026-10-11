@@ -20,6 +20,7 @@
     "vitest": "catalog:"
   },
   "dependencies": {
-    "@autogeek/core": "workspace:*"
+    "@autogeek/core": "workspace:*",
+    "zod": "catalog:"
   }
 }
