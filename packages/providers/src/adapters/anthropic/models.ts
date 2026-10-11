@@ -1,0 +1,156 @@
+import type { REASONING_EFFORTS } from '@autogeek/core';
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/** Integer micro-USD per million tokens (ModelInfo.pricing). */
+export interface Pricing {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead?: number;
+  readonly cacheWrite?: number;
+}
+
+/**
+ * What the adapter must know about a Claude model to build a valid request. Sources (verified
+ * 2026-10-11; re-verify when models change):
+ * - https://platform.claude.com/docs/en/about-claude/models/overview.md (limits, pricing)
+ * - https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking.md
+ * - https://platform.claude.com/docs/en/build-with-claude/effort.md
+ * - https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+ * `GET /v1/models` is authoritative for limits at listing time; this table only gates request
+ * features, so an unknown model gets none of them.
+ */
+export interface AnthropicModelProfile {
+  readonly displayName: string;
+  readonly contextWindow: number | null;
+  readonly maxOutputTokens: number | null;
+  /** Accepts `thinking: {type: "adaptive", display}`. */
+  readonly adaptiveThinking: boolean;
+  /** Accepted `output_config.effort` levels; empty means the parameter is not sent. */
+  readonly efforts: readonly ReasoningEffort[];
+  /** Accepts `role: "system"` inside `messages`. */
+  readonly midConversationSystem: boolean;
+  readonly pricing?: Pricing;
+}
+
+const ALL_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const NO_XHIGH: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'max'];
+const M = 1_000_000;
+
+/** USD per MTok to integer micros; cache writes use the 5-minute rate (1.25x input). */
+function price(input: number, output: number, cacheRead: number): Pricing {
+  return {
+    input: Math.round(input * M),
+    output: Math.round(output * M),
+    cacheRead: Math.round(cacheRead * M),
+    cacheWrite: Math.round(input * 1.25 * M),
+  };
+}
+
+function current(
+  displayName: string,
+  options: {
+    midConversationSystem: boolean;
+    efforts?: readonly ReasoningEffort[];
+    pricing?: Pricing;
+  },
+): AnthropicModelProfile {
+  return {
+    displayName,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    adaptiveThinking: true,
+    efforts: options.efforts ?? ALL_EFFORTS,
+    midConversationSystem: options.midConversationSystem,
+    ...(options.pricing === undefined ? {} : { pricing: options.pricing }),
+  };
+}
+
+const PROFILES: Readonly<Record<string, AnthropicModelProfile>> = {
+  'claude-fable-5-1': current('Claude Fable 5.1', {
+    midConversationSystem: true,
+    pricing: price(10, 50, 0.25),
+  }),
+  'claude-mythos-5-1': current('Claude Mythos 5.1', {
+    midConversationSystem: true,
+    pricing: price(10, 50, 0.25),
+  }),
+  'claude-fable-5': current('Claude Fable 5', {
+    midConversationSystem: true,
+    pricing: price(10, 50, 1),
+  }),
+  'claude-mythos-5': current('Claude Mythos 5', {
+    midConversationSystem: true,
+    pricing: price(10, 50, 1),
+  }),
+  'claude-opus-5-5': current('Claude Opus 5.5', {
+    midConversationSystem: true,
+    pricing: price(4, 20, 0.2),
+  }),
+  'claude-opus-5': current('Claude Opus 5', {
+    midConversationSystem: true,
+    pricing: price(5, 25, 0.5),
+  }),
+  'claude-opus-4-8': current('Claude Opus 4.8', {
+    midConversationSystem: true,
+    pricing: price(5, 25, 0.5),
+  }),
+  'claude-opus-4-7': current('Claude Opus 4.7', { midConversationSystem: false }),
+  'claude-opus-4-6': current('Claude Opus 4.6', {
+    midConversationSystem: false,
+    efforts: NO_XHIGH,
+  }),
+  'claude-sonnet-5-5': current('Claude Sonnet 5.5', {
+    midConversationSystem: true,
+    pricing: price(2, 10, 0.2),
+  }),
+  'claude-sonnet-5': current('Claude Sonnet 5', {
+    midConversationSystem: false,
+    pricing: price(2, 10, 0.2),
+  }),
+  'claude-sonnet-4-6': current('Claude Sonnet 4.6', {
+    midConversationSystem: false,
+    efforts: NO_XHIGH,
+  }),
+  'claude-haiku-5-5': {
+    ...current('Claude Haiku 5.5', { midConversationSystem: true }),
+    contextWindow: null,
+  },
+  'claude-haiku-4-5': {
+    displayName: 'Claude Haiku 4.5',
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    adaptiveThinking: false,
+    efforts: [],
+    midConversationSystem: false,
+  },
+};
+
+/** A dated snapshot id (`claude-haiku-4-5-20251001`) shares its alias's profile. */
+const SNAPSHOT_SUFFIX = /-\d{8}$/;
+
+export function anthropicProfile(modelId: string): AnthropicModelProfile | undefined {
+  return PROFILES[modelId] ?? PROFILES[modelId.replace(SNAPSHOT_SUFFIX, '')];
+}
+
+/**
+ * The supported level nearest to `requested`: the closest lower one, else the closest higher
+ * one. Undefined when the model takes no effort parameter.
+ */
+export function nearestEffort(
+  requested: ReasoningEffort,
+  supported: readonly ReasoningEffort[],
+): ReasoningEffort | undefined {
+  if (supported.includes(requested)) return requested;
+  const ladder = ALL_EFFORTS;
+  const index = ladder.indexOf(requested);
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const level = ladder[i];
+    if (level !== undefined && supported.includes(level)) return level;
+  }
+  for (let i = index + 1; i < ladder.length; i += 1) {
+    const level = ladder[i];
+    if (level !== undefined && supported.includes(level)) return level;
+  }
+  return undefined;
+}
