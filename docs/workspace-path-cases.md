@@ -288,11 +288,24 @@ behavior wins and the case says so.
 | 11.9 | global excludes (`core.excludesFile`, `~/.config/git/ignore`) | NOT read: the matcher never consults git config, so a repo cannot point it at another file; the user-level global file is out of scope in v1 and documented |
 | 11.10 | `.ignore` files (ripgrep convention) | honored the same way as `.gitignore` |
 | 11.11 | `.gitignore` is a symlink to a file outside the root | not followed (treated as absent), rule files must resolve inside the root |
-| 11.12 | `.gitignore` is a directory, unreadable, or larger than 1 MiB | treated as absent / truncated at the cap, never an exception; size cap prevents a ReDoS or memory attack |
-| 11.13 | pathological patterns (`*` repeated thousands of times, deeply nested `**`) | matching is linear-time (translated without backtracking-prone regex) or capped; test asserts a time bound |
+| 11.12 | `.gitignore` is a directory or unreadable | treated as absent (a missing rule file is not an error, as in git) |
+| 11.12b | input caps exceeded: rule file over 1 MiB, more than 10,000 rules per file, a line over 4 KiB, a path deeper than 128 segments, more than 1,000 rule files in one walk | typed error `ignore_limit_exceeded` naming the cap; never a hang, never a silent truncation. Fail closed: `listDir` returns the error to the caller instead of guessing flags (decision to confirm with ag-ui, since it adds an error to `workspace.listDir`) |
+| 11.13 | pathological patterns (`*` repeated thousands of times, `a*a*a*a*b` on `aaaa...`, deeply nested `**`) | linear time by construction: patterns compile to a segment matcher run as a greedy two-pointer / NFA simulation with no backtracking and no `RegExp`. A fast-check test generates adversarial patterns and paths and asserts a wall-time bound and that the match count of steps is at most `O(pattern length * path length)` |
 | 11.14 | case-insensitive volume (macOS) | pattern matching is case-sensitive as in git's default `core.ignorecase=false`; documented. On case-insensitive volumes the matcher uses the on-disk name, not the requested spelling |
 | 11.15 | NFC vs NFD names | compared on the on-disk name, byte-exact; documented as git's behavior |
 | 11.16 | `listDir` of `.git` itself | listed but flagged ignored; never expanded by the tree watcher |
 | 11.17 | `ignored` entries are still listed (flag only), while `glob`/`grep`/the watcher skip ignored paths by default | tested per consumer |
 | 11.18 | a sensitive file that is also gitignored (`.env`) | `ignored: true`, still `sensitive`; ignoring never lowers sensitivity |
-| 11.19 | ignore matcher output equals `git check-ignore` on a corpus of generated trees | a differential test run only in CI where `git` exists, using the hardened `GitRunner` on a repo the test itself creates (not the hostile one) |
+| 11.19 | differential test against `git check-ignore --no-index -v --stdin -z`, run INSIDE `pnpm verify` (not an optional job), through the hardened `GitRunner` on a fixture repo the test creates itself (no hostile config). Corpus: negation, anchoring, directory-only, escapes, `**`, trailing spaces, CRLF, BOM, nested `.gitignore` precedence, `.git/info/exclude`, and a case-insensitive volume (a temp dir on a case-insensitive filesystem when available, else `core.ignorecase=true` fixtures). If the `git` binary is missing the test FAILS LOUDLY with a typed error; there is no skip | matcher decisions equal git's on every corpus item, except the documented divergences below |
+
+### Known divergences from git (each an explicit decision)
+
+| # | Divergence | Decision |
+|---|---|---|
+| D1 | global excludes (`core.excludesFile`, `~/.config/git/ignore`) are not consulted | repo-controlled config must not influence listing; documented in the matcher header; the differential test runs git with `GIT_CONFIG_GLOBAL` pointing at an empty file so both sides agree |
+| D2 | `.gitignore` files that are symlinks leaving the root are treated as absent | git would follow them; we must not read outside the root |
+| D3 | input caps (11.12b) | git has none; a typed error is the safe answer |
+| D4 | tracked files: git's ignore rules do not apply to already-tracked files; the matcher reports a path's ignore state purely from the rules (`--no-index` semantics) | the flag means "matches an ignore rule", not "untracked"; documented for the UI |
+
+Any further divergence found by the differential test must be added here before the test is allowed
+to exclude it.
