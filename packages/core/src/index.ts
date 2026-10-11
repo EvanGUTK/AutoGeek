@@ -36,3 +36,16 @@ export {
   RoleSchema,
 } from './model/message.ts';
 export type { ContentPart, Message, ProviderMetadata, Role } from './model/message.ts';
+export {
+  PROVIDER_ERROR_KINDS,
+  PROVIDER_ERROR_MESSAGES,
+  PROVIDER_ERROR_RETRYABLE,
+  ProviderErrorKindSchema,
+  ProviderErrorSchema,
+  providerError,
+} from './model/provider-error.ts';
+export type {
+  ProviderError,
+  ProviderErrorExtras,
+  ProviderErrorKind,
+} from './model/provider-error.ts';
