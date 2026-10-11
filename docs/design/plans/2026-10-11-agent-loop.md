@@ -385,6 +385,9 @@ Rules:
   - the outcome is `gate_violation`;
   - the audit happens through the driver's `audit` dep (add `audit: AuditSink` to `LoopDeps`).
 
+- **Depends on permissions slice 1c (Tasks 11–12)** for `Tool.mutatesWorkTree` and
+  `gate.noteWorkTreeMutated`. If slice 1c hasn't merged yet, do the rest of this task first
+  and add this bullet's behavior and tests in a follow-up commit once it has.
 - **Work-tree mutation (chief ruling):** when a call whose tool declares
   `mutatesWorkTree: true` has started (`tool_started` emitted) and then settles or is
   interrupted, the reducer emits command `{ type: 'note_work_tree_mutated'; callId }`. The

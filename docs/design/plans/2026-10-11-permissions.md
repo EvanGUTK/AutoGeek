@@ -16,8 +16,18 @@ builtins.
 **Tech Stack:** TypeScript (repo strict config), zod 4 (via core schemas), Vitest, fast-check
 (dev), picomatch.
 
-**Spec:** `docs/design/agent-and-permissions.md` §2 and `docs/agent-contract.md` §1–§3, §6, §7.
-The contract wins on any difference.
+**Spec:** `docs/design/agent-and-permissions.md` §2 and `docs/agent-contract.md` §1–§3, §6, §7,
+§11. The contract wins on any difference.
+
+**Review slices** (chief: "if it grows past what one review can hold, split it"). Each one is
+its own ag-reviewer request:
+- **1a, policy engine:** Task 0 (`EnvKeyClassifier` port) and Tasks 1–4.
+- **1b, grants, audit, store, gate:** Tasks 5–10. There's no exec-vector logic yet. Its hooks
+  are absent, not stubbed.
+- **1c, exec-grant clearing:** Task 11 (the `ExecVectorClassifier` and `ExecVectorChangeTap`
+  ports, and `Tool.mutatesWorkTree`), Task 12 (gate triggers: exec-vector write, mutating exec,
+  work-tree mutation), Task 13 (tap integration) and Task 14 (property tests). This slice is
+  required before agent mode ships (M3), so it may land after the loop's first slices.
 
 ## Global Constraints
 
@@ -53,7 +63,7 @@ The contract wins on any difference.
   - `argv` / `argv_prefix` / `shell` rules never match a request with a non-empty `env`;
   - session-grant keys include `class` and canonical `env`;
   - grants are per root and cleared on root change and on `setTrust(false)`.
-- **Exec-vector writes (contract §2):**
+- **Exec-vector writes (contract §2; slice 1c):**
   - any `allow` for an `fs_write` (any op) whose `path` or `to` is an exec vector clears that
     root's `exec` / `exec_shell` session grants;
   - `fs_read`, `fs_write` and `mcp` grants stay;
@@ -61,13 +71,13 @@ The contract wins on any difference.
   - the predicate is the injected core port `ExecVectorClassifier` (ag-workspace's table);
   - a throw counts as an exec vector, plus a warning;
   - no classifier, no gate.
-- **Work-tree mutation (chief ruling):** when a started call of a tool that declares
+- **Work-tree mutation (chief ruling; slice 1c):** when a started call of a tool that declares
   `mutatesWorkTree: true` settles in any way, the agent calls `gate.noteWorkTreeMutated(...)`:
   - that call clears the root's exec / exec_shell grants;
   - it is audited as `grants_cleared` with reason `work_tree_mutated`;
   - a call that's rejected or skipped (never started) doesn't clear;
   - arbitrary exec / exec_shell doesn't clear, because that would nullify exec grants.
-- **Exec that may rewrite exec vectors (chief ruling "A").** On any `allow` for `exec`
+- **Exec that may rewrite exec vectors (chief ruling "A"; slice 1c).** On any `allow` for `exec`
   (`argv`) or `exec_shell`, the gate checks the port.
   - For `exec_shell`, the argv is `simpleArgvOf(command)`. `null` counts as mutating (fail
     closed).
@@ -83,6 +93,20 @@ The contract wins on any difference.
     every approved `exec_shell` clears exec grants. Shell-string session grants are effectively
     single-use there. That's accepted as fail closed and must be stated in the user-facing
     approval docs. Argv `exec` grants are unaffected.
+- **Change tap (slice 1c, chief-approved port #3):**
+  - `ExecVectorChangeTap.subscribe` events `changed` / `degraded` clear that root's exec grants
+    (audit `exec_vector_changed` / `watcher_unhealthy`);
+  - before any exec / exec_shell allow that would come from a **session grant**, the gate calls
+    `isHealthy` and then `await tap.flush(rootKey, signal)`, bounded by `tapFlushTimeoutMs`
+    (default 1_500) combined with the request signal, and re-evaluates;
+  - unhealthy, a timeout, a throw or a missing tap ⇒ clear exec grants, audit
+    `watcher_unhealthy`, and fall back to ask. Never allow by grant on a failed flush;
+  - while unhealthy, `offered` for exec / exec_shell omits `'session'`, and the decision's
+    audit entry records `sessionWithheld: 'watcher_unhealthy'`;
+  - the listener never throws: it clears first, then audits, and an audit failure goes to
+    `onWarning`;
+  - documented residual: one command that edits a vector and then runs it, and new vector
+    files seen only through delayed native events.
 - **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through the core
   port `EnvKeyClassifier`, which ag-agent defines in core in Task 0. The chief granted edit
   rights to that one file plus its one registration line. The classifier is never optional:
@@ -118,7 +142,7 @@ The contract wins on any difference.
 
 ---
 
-### Task 0: `EnvKeyClassifier` and `ExecVectorClassifier` ports in core (chief-granted files)
+### Task 0: `EnvKeyClassifier` port in core (chief-granted file; slice 1a)
 
 **Files:**
 - Create: `packages/core/src/ports/env-key-classifier.ts`, or the equivalent location in
@@ -144,36 +168,6 @@ Nothing else in core is touched.
   ag-workspace implements the port by calling this factory with its reviewed allowlist, so the
   invariants live in tested core code, not in each implementation.
 
-- Also produces (second file, `src/ports/exec-vector-classifier.ts`, one more export line):
-  `interface ExecVectorClassifier { isExecVector(canonicalRelativePath: string): boolean; execMayRewriteVectors(argv: readonly string[]): boolean; simpleArgvOf(command: string): readonly string[] | null }`.
-  `simpleArgvOf` is a conservative shell-word parse. It returns argv only for a single simple
-  command, and `null` for pipes, redirects, `;`/`&&`/`||`, `$()`/backticks, globs, env-assignment
-  prefixes, heredocs, unbalanced quotes, line continuations, or anything uncertain.
-  `execMayRewriteVectors` takes the basename of argv[0] (`/usr/bin/git`, `git.exe`) and skips
-  git global options (`-C`, `-c`, `--git-dir=`, `--work-tree=`, …) before the subcommand. If
-  that skip can't be done with certainty, it returns true.
-  The doc comment for `isExecVector`, as agreed with ag-workspace:
-  - input is POSIX, root-relative, with no leading `./`;
-  - matching is anchored-pattern and case-INSENSITIVE (ASCII fold plus NFC/NFD), because more
-    matches means more clearing, which is safer;
-  - **malformed input** (empty, absolute, `..`, NUL, backslash, leading `./`, over the cap) ⇒
-    `true`;
-  - **valid unmatched paths ⇒ `false`**, so ordinary source and test edits never clear;
-  - it never throws on a string.
-
-  This is an interface only. ag-workspace's tests own the table, and core has no runtime code
-  for it.
-- In the same file, under the same grant (chief):
-  - `type ExecVectorSignal = { type: 'changed' | 'unhealthy' | 'healthy' }`, with no paths and
-    no repository-controlled strings;
-  - `interface ExecVectorChangeSource { subscribe(rootKey: string, cb: (s: ExecVectorSignal) => void): () => void }`.
-
-  The doc comment says:
-  - raw fs events from any cause;
-  - `healthy` is emitted only after a full rescan;
-  - the consumer treats a root as unhealthy until its first `healthy`;
-  - the signal is asynchronous and therefore defense in depth. The three gate and loop
-    triggers are the race-free primary.
 - [ ] **Step 1: Write the failing tests:**
   - `CI` benign and `ci` not, when only `CI` is allowlisted;
   - unknown → false;
@@ -188,33 +182,9 @@ Nothing else in core is touched.
   - every listed key `isBenign`;
   - the classifier the workspace exports is the factory's output, not a hand-written one.
 
-  ag-agent asks ag-workspace to add it when the list lands. Before slice 1's second review
+  ag-agent asks ag-workspace to add it when the list lands. Before the slice 1b review
   request, check that it exists.
-- [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`, then
-  `feat(core): add ExecVectorClassifier port` (a separate atomic commit).
-- **Third core change (chief-granted, agreed with ag-workspace):** add
-  `readonly mutatesWorkTree: boolean` to core's `Tool` metadata. It's **REQUIRED, with no
-  default** (chief), so no tool can silently opt out.
-
-  The doc comment says:
-  - true iff running the tool can rewrite workspace files without an `fs_write` gate check
-    (git work-tree operations);
-  - a started call clears the root's exec session grants when it settles in any way;
-  - **bridged MCP tools declare `true` by default** (unknown effects, fail closed). Relaxing it
-    for a specific read-only MCP tool is a user-visible, confirmed per-tool setting that ag-mcp
-    designs later. This sentence is what ag-mcp's brief inherits.
-
-  Tests (no `@ts-expect-error`, which is banned):
-  - (1) `expectTypeOf<Pick<Tool<unknown, unknown>, 'mutatesWorkTree'>>().toEqualTypeOf<{ readonly mutatesWorkTree: boolean }>()`,
-    which pins it as required, readonly and boolean;
-  - (2) `omitting mutatesWorkTree fails to compile`: compile an in-memory fixture with the real
-    TypeScript compiler API (`ts.createProgram` against core's tsconfig) that builds a `Tool`
-    without the field, and assert exactly one diagnostic with code 2741 naming
-    `mutatesWorkTree` (L-003: test the real command path).
-
-  This change breaks every existing `Tool` literal. If foundation's stubs or anyone's merged
-  tools exist by then, update them in the same commit, adding the field only, and list them in
-  the body. Commit `feat(core): require mutatesWorkTree in tool metadata`. The body
+- [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`. The body
   cites the chief's grant (edit rights to this file only) and L-005.
 
 ### Task 1: Package scaffold and pure helpers
@@ -363,7 +333,7 @@ Semantics:
     the chief; don't patch around it locally.
 - [ ] **Steps 2–4:** run → FAIL, implement, run → PASS.
 - [ ] **Step 5: Commit** `feat(permissions): add hard checks for validity, mode, trust and root`.
-  **Then request a review of Tasks 1–4** from ag-reviewer, per protocol §4.
+  **Then request a review of slice 1a** (Task 0 + Tasks 1–4) from ag-reviewer, per protocol §4.
 
 ### Task 5: Session grants
 
@@ -383,9 +353,9 @@ Semantics:
     - network: never a grant, so throw a programmer error.
   - `createSessionGrantStore(deps: { clock: () => number; newId: () => string }): SessionGrantStore`
   - `interface SessionGrantStore extends SessionGrantMatcher { grant(rootKey: string, req: PermissionRequest): SessionGrant; list(rootKey: string): readonly SessionGrant[]; revoke(id: string): boolean; clear(rootKey: string): readonly SessionGrant[]; clearExec(rootKey: string): readonly SessionGrant[] }`.
-    (`clearExec` serves both exec-vector writes and work-tree mutation.)
     `clear` and `clearExec` return the removed grants so the caller can audit them. `clearExec`
-    removes only `exec` / `exec_shell` grants.
+    removes only `exec` / `exec_shell` grants. Its callers arrive in slice 1c; it's tested
+    here.
   - `interface SessionGrant { id: string; rootKey: string; key: string; tool: string; action: PermissionAction; createdAt: number }`
 
 - [ ] **Step 1: Write the failing tests.**
@@ -471,24 +441,15 @@ alongside.
   - `interface Approver { request(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalOption> }`
   - `interface ApprovalPrompt { approvalId: string; request: PermissionRequest; offered: readonly ApprovalOption[] }`
   - `interface DetailedDecision { decision: PermissionDecision; via: DecisionVia; ruleId?: string }`
-  - `interface DetailedPermissionGate { checkDetailed(req: PermissionRequest, signal: AbortSignal): Promise<DetailedDecision>; noteWorkTreeMutated(info: { tool: string; provenance: PermissionRequest['provenance'] }): Promise<void> }`.
-    `noteWorkTreeMutated` clears the current root's exec grants and audits `work_tree_mutated`.
-    It never throws: an audit failure is reported through `onWarning`, because the grants are
-    already cleared, which is the safe state.
-  - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; env: EnvKeyClassifier; execVectors: ExecVectorClassifier; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
+  - `interface DetailedPermissionGate { checkDetailed(req: PermissionRequest, signal: AbortSignal): Promise<DetailedDecision> }`.
+    Slice 1c extends it.
+  - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; env: EnvKeyClassifier; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
 
-`createPermissionGate` throws a `TypeError` when `deps.env?.isBenign` or
-`deps.execVectors?.isExecVector` isn't a function. That's
+`createPermissionGate` throws a `TypeError` when `deps.env?.isBenign` isn't a function. That's
 the runtime half; the required property is the type-level half. Test:
 `gate refuses to construct without a classifier`.
 
-Algorithm: design §2 steps 1–9. After step 7, on an `allow` for `exec`/`exec_shell` whose argv
-(`simpleArgvOf` for shell, `null` ⇒ mutating) satisfies `execMayRewriteVectors`, clear and audit
-`exec_vector_exec`. When the decision is `allow` for an `fs_write`
-whose `path` or `to` is an exec vector (checked on root-relative paths; a throw counts as true and
-raises a warning), call `grants.clearExec(rootKey)` and audit `grants_cleared` /
-`exec_vector_write`. This happens even when the clear removes nothing, so the audit shows the
-trigger. `approvalId = req.provenance.checkId`. The approver is raced
+Algorithm: design §2 steps 1–9. `approvalId = req.provenance.checkId`. The approver is raced
 against `signal`. The audit `literal` is `redactSecrets(renderLiteral(action))`. An approver that rejects or returns a value outside `offered` → deny `user` /
 `user_deny`, audited. On `'session'`, call `grants.grant(root.rootKey, req)` and audit `grant_added`. When the
 audit append fails, return deny `policy` / `audit_failed`.
@@ -539,38 +500,6 @@ owner of each run.
   - `approval_resolved is emitted exactly once per approval on every path`.
 - [ ] **Steps 2–4**, **Step 5: Commit** `feat(permissions): add approval broker for the permissions channels`.
 
-### Task 9b: Exec-grant guard for the change source (required before M3 ships; may land after slice 1)
-
-**Files:** Create `src/grants/exec-grant-guard.ts`; Test alongside.
-
-**Interfaces:**
-- Consumes: `ExecVectorChangeSource` (core), `SessionGrantStore` (Task 5), `AuditSink` (Task 6).
-- Produces: `createExecGrantGuard(deps: { source: ExecVectorChangeSource; grants: SessionGrantStore; audit: AuditSink; onWarning(code: 'audit_failed', cause: string): void }): ExecGrantGuard`
-- `interface ExecGrantGuard { watch(rootKey: string): () => void; isBlocked(rootKey: string): boolean }`
-
-Behavior:
-- A root starts **blocked** at `watch()` and stays blocked until its first `healthy` signal.
-- `changed` → `clearExec(rootKey)`, audit `grants_cleared` / `exec_vector_changed`.
-- `unhealthy` → `clearExec`, audit `watcher_unhealthy`, then blocked.
-- `healthy` → unblocked.
-
-The gate takes the guard as a required dep:
-- while `isBlocked(rootKey)`, exec/exec_shell session grants never match;
-- `offered` for exec/exec_shell omits `'session'`.
-
-desktop calls `watch(rootKey)` on root open and the returned unsubscribe on root change. Root
-change already clears all grants (contract §11).
-
-- [ ] **Step 1: Write the failing tests** (chief's list):
-  - `a changed signal clears that root's exec grants`;
-  - `a signal for another root clears nothing`;
-  - `unhealthy clears and blocks grant matching until healthy`;
-  - `root starts blocked until first healthy`;
-  - `blocked root offers no session for exec`;
-  - `fs and mcp grants survive`;
-  - `unsubscribe stops processing`.
-- [ ] **Steps 2–5**, then commit `feat(permissions): clear exec grants on exec-vector change signals`.
-
 ### Task 10: Injection-invariant property tests, and the public surface
 
 **Files:** Create `src/invariants.property.test.ts`; Modify `src/index.ts` (export only:
@@ -598,6 +527,154 @@ change already clears all grants (contract §11).
     redacted value or a non-benign key.
   - `clear forgets`: after `clearSessionGrants(rootKey)`, every request previously allowed via
     `session_grant` under that root asks again.
+  - `nothing is allowed without an affirmative allow`: every `allow` has via `rule`,
+    `session_grant`, `baseline` or `user_once`/`user_session`, and an audit entry.
+  - `index exports only the public surface`: an `Object.keys(await import('./index'))` snapshot.
+- [ ] **Step 2: Run.** These should pass on the first run, since Tasks 1–9 implement the
+  behavior. Any failure is a real bug: fix it in the owning module with a regression unit test
+  there, not here.
+- [ ] **Step 3: Verify and commit.** `TURBO_FORCE=true pnpm verify`, then commit
+  `test(permissions): add injection-invariant property tests`. Then request a review of slice
+  1b (Tasks 5–10) from ag-reviewer. Flag `argv_prefix` (classifier dependency, contract §3) for
+  scrutiny, and add the SECURITY.md note, or ask its owner to.
+
+### Task 11: Exec-vector ports and `Tool.mutatesWorkTree` in core (chief-granted; slice 1c)
+
+**Files:** Create `packages/core/src/ports/exec-vector-classifier.ts`,
+`packages/core/src/ports/exec-vector-change-tap.ts`, with tests alongside. Modify core's
+`index.ts` (two export lines) and core's `Tool` definition (one field).
+
+**Interfaces:**
+- Produces, in `src/ports/exec-vector-classifier.ts` (its own file, plus one export line):
+  `interface ExecVectorClassifier { isExecVector(canonicalRelativePath: string): boolean; execMayRewriteVectors(argv: readonly string[]): boolean; simpleArgvOf(command: string): readonly string[] | null }`.
+  `simpleArgvOf` is a conservative shell-word parse. It returns argv only for a single simple
+  command, and `null` for pipes, redirects, `;`/`&&`/`||`, `$()`/backticks, globs, env-assignment
+  prefixes, heredocs, unbalanced quotes, line continuations, or anything uncertain.
+  `execMayRewriteVectors` takes the basename of argv[0] (`/usr/bin/git`, `git.exe`) and skips
+  git global options (`-C`, `-c`, `--git-dir=`, `--work-tree=`, …) before the subcommand. If
+  that skip can't be done with certainty, it returns true.
+  The doc comment for `isExecVector`, as agreed with ag-workspace:
+  - input is POSIX, root-relative, with no leading `./`;
+  - matching is anchored-pattern and case-INSENSITIVE (ASCII fold plus NFC/NFD), because more
+    matches means more clearing, which is safer;
+  - **malformed input** (empty, absolute, `..`, NUL, backslash, leading `./`, over the cap) ⇒
+    `true`;
+  - **valid unmatched paths ⇒ `false`**, so ordinary source and test edits never clear;
+  - it never throws on a string.
+
+  This is an interface only. ag-workspace's tests own the table, and core has no runtime code
+  for it.
+- Produces, in `src/ports/exec-vector-change-tap.ts`:
+  - `type ExecVectorTapEvent = { rootKey: string; kind: 'changed' | 'degraded' | 'recovered' }`,
+    with no path (chief ruling: no repository-controlled strings);
+  - `interface ExecVectorChangeTap { subscribe(listener: (e: ExecVectorTapEvent) => void): () => void; flush(rootKey: string, signal: AbortSignal): Promise<void>; isHealthy(rootKey: string): boolean }`.
+
+  The doc comment says:
+  - the tap reacts to raw fs events from any cause, including ignored paths, but not
+    dependency trees;
+  - `flush` drains buffered events and rescans the known vector files;
+  - `isHealthy` is false until the first full scan and while degraded;
+  - the tap is asynchronous defense in depth, and the gate and loop triggers are primary.
+
+  Interface only; ag-workspace tests the implementation.
+- Also: add
+  `readonly mutatesWorkTree: boolean` to core's `Tool` metadata. It's **REQUIRED, with no
+  default** (chief), so no tool can silently opt out.
+
+  The doc comment says:
+  - true iff running the tool can rewrite workspace files without an `fs_write` gate check
+    (git work-tree operations);
+  - a started call clears the root's exec session grants when it settles in any way;
+  - **bridged MCP tools declare `true` by default** (unknown effects, fail closed). Relaxing it
+    for a specific read-only MCP tool is a user-visible, confirmed per-tool setting that ag-mcp
+    designs later. This sentence is what ag-mcp's brief inherits.
+
+  Tests (no `@ts-expect-error`, which is banned):
+  - (1) `expectTypeOf<Pick<Tool<unknown, unknown>, 'mutatesWorkTree'>>().toEqualTypeOf<{ readonly mutatesWorkTree: boolean }>()`,
+    which pins it as required, readonly and boolean;
+  - (2) `omitting mutatesWorkTree fails to compile`: compile an in-memory fixture with the real
+    TypeScript compiler API (`ts.createProgram` against core's tsconfig) that builds a `Tool`
+    without the field, and assert exactly one diagnostic with code 2741 naming
+    `mutatesWorkTree` (L-003: test the real command path).
+
+  This change breaks every existing `Tool` literal. If foundation's stubs or anyone's merged
+  tools exist by then, update them in the same commit, adding the field only, and list them in
+  the body.
+
+- [ ] **Commits** (atomic, in order; each body cites the chief's grant and L-005):
+  1. `feat(core): add ExecVectorClassifier port`
+  2. `feat(core): add ExecVectorChangeTap port`
+  3. `feat(core): require mutatesWorkTree in tool metadata` (with its two tests)
+
+### Task 12: Gate triggers for exec-grant clearing (slice 1c)
+
+**Files:** Modify `src/gate/gate.ts`; Create `src/gate/exec-clearing.ts`; Test alongside.
+
+**Interfaces:**
+- Consumes: `ExecVectorClassifier` (Task 11), `SessionGrantStore.clearExec` (Task 5).
+- Produces:
+  - `createPermissionGate` deps gain `execVectors: ExecVectorClassifier`, which is required
+    (runtime `TypeError` when missing);
+  - `DetailedPermissionGate` gains `noteWorkTreeMutated(info: { tool: string; provenance: PermissionRequest['provenance'] }): Promise<void>`;
+  - pure helper
+    `clearingReason(req: PermissionRequest, root: string, execVectors: ExecVectorClassifier): 'exec_vector_write' | 'exec_vector_exec' | null`.
+    A throw from the port counts as a positive, and the caller warns.
+
+Behavior, after an `allow` (any via):
+- `fs_write` with `path` or `to` an exec vector (root-relative) → `clearExec` + audit
+  `exec_vector_write`;
+- `exec` with `execMayRewriteVectors(argv)`, or `exec_shell` with `simpleArgvOf(command)`
+  null-or-mutating → `clearExec` + audit `exec_vector_exec`;
+- the audit is written even when nothing was removed;
+- `noteWorkTreeMutated` → `clearExec` + audit `work_tree_mutated`. It never throws, and an
+  audit failure goes to `onWarning`.
+
+- [ ] **Step 1: Write the failing unit tests:**
+  - one per trigger;
+  - per-root only;
+  - fs/mcp grants survive;
+  - a port throw clears;
+  - a denied write doesn't clear;
+  - `gate refuses to construct without execVectors`.
+- [ ] **Steps 2–5**, then commit `feat(permissions): clear exec grants on exec-vector writes and mutating exec`.
+
+### Task 13: Tap integration (slice 1c)
+
+**Files:** Modify `src/gate/gate.ts`; Create `src/gate/tap-guard.ts`; Test alongside.
+
+**Interfaces:**
+- Produces:
+  - deps gain `tap: ExecVectorChangeTap` (required) and `tapFlushTimeoutMs?: number` (default
+    1_500);
+  - `DetailedPermissionGate` gains `dispose(): void`, which unsubscribes.
+
+Behavior: the Global Constraints "Change tap" block. Before allowing via `session_grant` for
+exec / exec_shell:
+1. `isHealthy`, then a bounded `flush`.
+2. Re-evaluate.
+3. On any failure, clear, audit `watcher_unhealthy` and ask. A request-signal abort stays deny
+   `aborted`.
+
+- [ ] **Step 1: Write the failing tests** (chief's list, plus the flush constraints):
+  - `a changed event clears that root's exec grants`;
+  - `an event for another root clears nothing`;
+  - `degraded clears and removes the session option until recovered`;
+  - `flush runs before grant matching` (a scripted tap emits `changed` during `flush` → the
+    exec asks);
+  - `flush timeout fails closed` (fake timers);
+  - `flush throw fails closed`;
+  - `isHealthy throwing counts as unhealthy`;
+  - `request abort during flush denies aborted`;
+  - `rule-based allow does not wait for flush` (only session-grant allows do);
+  - `dispose unsubscribes`.
+- [ ] **Steps 2–5**, then commit `feat(permissions): integrate the exec-vector change tap`.
+
+### Task 14: Exec-clearing property tests (slice 1c)
+
+**Files:** Create `src/exec-clearing.property.test.ts`.
+
+- [ ] **Step 1: Write the property tests** (fast-check, ≥ 300 runs) with a table-driven fake
+  `ExecVectorClassifier` and a scripted tap:
   - `exec-vector write re-arms exec approvals` (chief):
     - grant `npm test` → approved write to `package.json` → the same exec asks again;
     - grant → approved write to `src/a.ts` → still allowed via `session_grant`;
@@ -623,13 +700,14 @@ change already clears all grants (contract §11).
     - fs and mcp grants survive.
     (That rejected or skipped calls don't trigger it, and that arbitrary exec never clears,
     are loop-side tests in the loop plan's Task 9.)
-  - `nothing is allowed without an affirmative allow`: every `allow` has via `rule`,
-    `session_grant`, `baseline` or `user_once`/`user_session`, and an audit entry.
-  - `index exports only the public surface`: an `Object.keys(await import('./index'))` snapshot.
-- [ ] **Step 2: Run.** These should pass on the first run, since Tasks 1–9 implement the
-  behavior. Any failure is a real bug: fix it in the owning module with a regression unit test
-  there, not here.
-- [ ] **Step 3: Verify and commit.** `TURBO_FORCE=true pnpm verify`, then commit
-  `test(permissions): add injection-invariant property tests`. Then request a review of
-  Tasks 5–10 from ag-reviewer. Flag `argv_prefix` (classifier dependency, contract §3) for
-  scrutiny, and add the SECURITY.md note, or ask its owner to.
+  - `tap events re-arm exec approvals` (chief):
+    - user-edit `changed` → the granted exec asks again;
+    - degraded → no `'session'` in `offered` until recovered;
+    - any sequence of tap events never adds a grant.
+- [ ] **Step 2: Verify and commit** `test(permissions): add exec-grant clearing property tests`.
+  Request a review of slice 1c. Then add, or ask its owner to add, the SECURITY.md residuals:
+  - one command that edits a vector and then runs it;
+  - new vector files seen only through delayed events;
+  - arbitrary scripts' side effects;
+  - the user's own edits during the async window;
+  - Windows shell-string grants being single-use.
