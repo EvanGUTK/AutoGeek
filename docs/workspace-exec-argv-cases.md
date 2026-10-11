@@ -22,7 +22,7 @@ The gate treats `exec_shell` with `simpleArgvOf(...) === null` as mutating, so `
 grant, while `git checkout x && make test` clears. Direction of every error: **more clearing is
 safe**, so every uncertain case returns "mutating" (`true`) or `null`.
 
-Not covered (documented in `docs/SECURITY.md`, not hidden): script side effects (`make test` whose
+Not covered (documented in `docs/SECURITY.md`, not hidden): programs a repository configures for read-only git commands (`core.fsmonitor`, `diff.<driver>.textconv`, `diff.external`, `core.pager`, which can run on `git status`, `diff`, `log -p` and `show`; writes to `.git/config` are elevated and the workspace must be trusted), script side effects (`make test` whose
 recipe edits a Makefile; any `node x.js`, `python x.py`, `sh script.sh`), the user's own edits,
 edits by other tools, and a repo-local executable named like a known one (`./git`).
 
@@ -66,12 +66,14 @@ program), `--ext-diff`, `--textconv` (run configured programs), `--exec=*`, `--u
 
 | Tool | Mutating subcommands (a bare invocation counts as `install` where noted) |
 |---|---|
-| `npm` | `install`, `i`, `add`, `ci`, `uninstall`, `remove`, `rm`, `un`, `update`, `up`, `upgrade`, `link`, `ln`, `unlink`, `dedupe`, `ddp`, `rebuild`, `rb`, `prune`, `init`, `create`, `version`, `pkg`, `set`, `config`, `audit` (with `fix`), `shrinkwrap`, `patch` |
-| `pnpm` | `install`, `i`, `add`, `remove`, `rm`, `uninstall`, `un`, `update`, `up`, `upgrade`, `link`, `ln`, `unlink`, `import`, `prune`, `dedupe`, `patch`, `patch-commit`, `rebuild`, `rb`, `approve-builds`, `config`, `set`, `self-update`, `setup`, `init`, `create`, `deploy`, `fetch` (bare `pnpm` with only options counts as help and is `false`) |
-| `yarn` | bare `yarn` (install), `install`, `add`, `remove`, `up`, `upgrade`, `upgrade-interactive`, `link`, `unlink`, `patch`, `patch-commit`, `dedupe`, `set`, `config`, `init`, `create`, `plugin`, `workspaces` (with `focus`/`foreach` it is classified as the inner command) |
-| `bun` | `install`, `i`, `add`, `a`, `remove`, `rm`, `update`, `link`, `unlink`, `patch`, `pm`, `init`, `create`, `upgrade` |
+| `npm` (READ-ONLY ALLOWLIST, like git; unknown words are mutating, so typo aliases such as `isntall`, `instal`, `it`/`install-test`, `cit`/`install-ci-test` and `npm i` variants are caught) | read-only: `test`/`t`/`tst`, `start`, `stop`, `restart`, `run`/`run-script`/`rum`/`urn`, `ls`/`list`/`la`/`ll`, `view`/`v`/`info`/`show`, `outdated`, `why`/`explain`, `audit` WITHOUT `fix`, `help`/`h`, `--version`/`-v`, `ping`, `doctor`, `fund`, `search`/`s`; `exec`/`x`/`npx` are wrappers. Options before the subcommand are skipped when known (`--prefix <p>`, `-C <p>`, `-w <ws>`/`--workspace[=]<ws>`, `-ws`, `--workspaces`, `--loglevel <l>`, `--silent`/`-s`, `--no-color`, `--userconfig <p>`, `--if-present`); an unknown option or no subcommand is `true`. Everything else is mutating, e.g. `install`, `i`, `add`, `ci`, `uninstall`, `rm`, `update`, `up`, `link`, `dedupe`, `rebuild`, `prune`, `init`, `version`, `pkg`, `set`, `config`, `audit fix`, `shrinkwrap`, `patch`, `pack` |
+| `pnpm` (denylist: pnpm runs a package script for an unknown word, so an unknown word is `false`) | `install`, `i`, `add`, `remove`, `rm`, `uninstall`, `un`, `update`, `up`, `upgrade`, `link`, `ln`, `unlink`, `import`, `prune`, `dedupe`, `patch`, `patch-commit`, `rebuild`, `rb`, `approve-builds`, `config`, `set`, `self-update`, `setup`, `init`, `create`, `deploy`, `fetch`, `install-test`, `it`, `env`, `store` (bare `pnpm` with only options counts as help and is `false`) |
+| `yarn` (denylist, as pnpm) | bare `yarn` (install), `install`, `add`, `remove`, `up`, `upgrade`, `upgrade-interactive`, `link`, `unlink`, `patch`, `patch-commit`, `dedupe`, `set`, `config`, `init`, `create`, `plugin`, `generate-lock-entry`, `import`, `policies`, `workspaces` (with `focus`/`foreach` it is classified as the inner command) |
+| `bun` (denylist) | `install`, `i`, `add`, `a`, `remove`, `rm`, `update`, `link`, `unlink`, `patch`, `pm`, `init`, `create`, `upgrade`, `x`/`bunx` are wrappers |
 | `pip`, `pip3`, `python -m pip`, `python3 -m pip`, `uv pip` | `install`, `uninstall`, `download` (writes files), `wheel`, `config`, `cache` |
-| `uv` | `sync`, `add`, `remove`, `lock`, `venv`, `init`, `tool`, `python`, `pip` (as above) |
+| `uv` | `sync`, `add`, `remove`, `lock`, `venv`, `init`, `tool`, `python`, `pip` (as above), and `run` (it locks and syncs `uv.lock` and `.venv` by default; `false` ONLY with `--frozen` or `--no-sync`) |
+| `python -m venv`, `python3 -m venv`, `virtualenv`, `corepack` (`use`, `up`, `install`, `enable`) | mutating: they create dependency directories (7a.20) or rewrite `package.json` |
+| hook installers: `pre-commit install`, `pre-commit autoupdate`, `husky`, `husky init`, `husky install`, `lefthook install`, `simple-git-hooks` | mutating: they write `.git/hooks` or `.husky` |
 | `poetry` | `install`, `add`, `remove`, `update`, `lock`, `init`, `self`, `env`, `config`, `build`, `new`, `sync` |
 | `pipenv`, `pdm`, `hatch` | `install`, `uninstall`, `update`, `lock`, `sync`, `add`, `remove`, `init`, `new`, `run` is NOT mutating |
 | `cargo` | `install`, `add`, `remove`, `update`, `fetch`, `vendor`, `generate-lockfile`, `fix`, `init`, `new`, `package`, `publish` |
@@ -100,15 +102,16 @@ residual (their scripts and build steps may rewrite vectors).
 | A.8 | `['GIT','checkout']`, `['Git.EXE','pull']`, `['/usr/bin/git','merge','x']`, `['C:\\\\Program Files\\\\Git\\\\bin\\\\git.exe','reset']`, `['./git','checkout']` (basename git, so treated as git), `['git-checkout','x']`, `['git-status']` | `true`, `true`, `true`, `true`, `true`, `true`, `false` |
 | A.9 | `['git','st\\u0430tus']` (Cyrillic а), `['git','status ']`, `['git','Status']`, `['git','status\\u0000']` | `true` (not an exact allowlist match; subcommands are case-sensitive in git) |
 | A.10 | `['git','checkout']` with a `NAME=value` element in the middle of argv | `true` |
-| A.11 | `['npm','install']`, `['npm','i','left-pad']`, `['npm','ci']`, `['npm','update']`, `['npm','version','patch']`, `['npm','pkg','set','x=y']`, `['npm','config','set','x','y']`, `['npm','init','-y']` | `true` |
-| A.12 | `['npm','test']`, `['npm','run','build']`, `['npm','ls']`, `['npm','--version']`, `['npm']` | `false` |
+| A.11 | `['npm','install']`, `['npm','i','left-pad']`, `['npm','ci']`, `['npm','update']`, `['npm','version','patch']`, `['npm','pkg','set','x=y']`, `['npm','config','set','x','y']`, `['npm','init','-y']`, `['npm','it']`, `['npm','install-test']`, `['npm','cit']`, `['npm','install-ci-test']`, `['npm','isntall']`, `['npm','instal']`, `['npm','--weird','test']` (unknown option) | `true` |
+| A.12 | `['npm','test']`, `['npm','t']`, `['npm','run','build']`, `['npm','ls']`, `['npm','--version']`, `['npm','-w','pkg','run','x']`, `['npm','--prefix','sub','test']`, `['npm','audit']` | `false`; `['npm']` and `['npm','audit','fix']` are `true` |
 | A.13 | `['pnpm','add','x']`, `['pnpm','up']`, `['pnpm','install','--frozen-lockfile']`, `['pnpm','patch','x']`, `['pnpm','dedupe']`, `['pnpm','-r','install']`, `['pnpm','--filter','a','add','x']` | `true` (options before the subcommand are skipped) |
 | A.14 | `['pnpm','test']`, `['pnpm','run','lint']`, `['pnpm','-r','test']` | `false` |
 | A.15 | `['yarn']`, `['yarn','install']`, `['yarn','add','x']`, `['yarn','set','version','4']` | `true` |
 | A.16 | `['yarn','test']`, `['yarn','run','x']` | `false` |
 | A.17 | `['bun','install']`, `['bun','add','x']`, `['bun','pm','trust','x']`, `['bun','run','x']` | `true`, `true`, `true`, `false` |
 | A.18 | `['pip','install','x']`, `['python','-m','pip','install','x']`, `['python3','-m','pip','uninstall','x']`, `['uv','pip','install','x']`, `['uv','sync']`, `['poetry','add','x']`, `['poetry','install']` | `true` |
-| A.19 | `['pip','list']`, `['pip','show','x']`, `['python','-m','pytest']`, `['pytest']`, `['uv','run','pytest']` | `false` |
+| A.19 | `['pip','list']`, `['pip','show','x']`, `['python','-m','pytest']`, `['pytest']`, `['uv','run','--frozen','pytest']`, `['uv','run','--no-sync','pytest']` | `false` |
+| A.19b | `['uv','run','pytest']`, `['python','-m','venv','.venv']`, `['python3','-m','venv','x']`, `['virtualenv','x']`, `['corepack','use','pnpm@9']`, `['pre-commit','install']`, `['husky','init']`, `['lefthook','install']` | `true` |
 | A.20 | `['cargo','add','x']`, `['cargo','update']`, `['cargo','install','x']`, `['cargo','vendor']`, `['go','get','x']`, `['go','mod','tidy']`, `['go','generate','./...']`, `['bundle']`, `['bundle','install']`, `['gem','install','x']`, `['composer','require','x']`, `['dotnet','add','package','x']` | `true` |
 | A.21 | `['cargo','build']`, `['cargo','test']`, `['go','build']`, `['go','test','./...']`, `['go','vet']`, `['bundle','exec','rspec']` | `false` |
 | A.22 | `['make','test']`, `['just','build']`, `['node','x.js']`, `['python','x.py']`, `['sh','script.sh']`, `['./script.sh']`, `['ls']`, `['cat','Makefile']` | `false` (documented residual: unknown executables) |
@@ -133,9 +136,11 @@ construction: a small grammar is accepted and everything else, including anythin
 `null`. On `win32` (cmd.exe and PowerShell quoting differ) it always returns `null` and the gate
 treats it as mutating.
 
+`exec_shell` always runs `/bin/sh -c <command>`, never the user's login shell or zsh, so the grammar below is plain POSIX sh; the tool pins the shell to `/bin/sh` (S.26).
+
 **Accepted grammar:** one or more words separated by spaces or tabs, with leading and trailing
 spaces or tabs allowed. A word is a concatenation of:
-- unquoted runs of characters from `[A-Za-z0-9_@%+=:,./-]` (plus any character at or above U+0080 that is not whitespace, control, bidi, or format);
+- unquoted runs of characters from `[A-Za-z0-9_@%+=:,./-]` (ASCII only);
 - single-quoted strings (any content except `'` and control characters other than tab);
 - double-quoted strings whose content has no `$`, backtick, `\`, `!` or control characters other than tab.
 
@@ -145,7 +150,7 @@ Empty quotes (`''`, `""`) produce an empty word.
 expansion); a backslash anywhere (escapes, line continuation); an unquoted `| & ; < > ( ) { } [ ] * ? ~ ! # ^`
 (pipes, lists, redirects, subshells, braces, globs, tilde, history, comments); an unquoted `\n` or
 `\r` or any other control character, NUL, or Unicode whitespace/bidi/format character; unbalanced
-quotes; an empty command; a first word that is an env assignment (`NAME=...`) or empty (`''`); a first word that is
+quotes; an empty command; ANY non-ASCII character anywhere (the result must not depend on the shell's locale, and `LANG`/`LC_ALL` are allowlisted env keys); a word that starts with `=` in any position (zsh `EQUALS` expansion, `=git`); a first word that is an env assignment (`NAME=...`) or empty (`''`); a first word that is
 a reserved word (`if then else elif fi for while until do done case esac in function select time
 coproc ! { }`); a command over 64 KiB; or any word that would start with `-` inside a here-string
 form. Heredocs (`<<`) and line continuations fall under the characters above.
@@ -167,7 +172,8 @@ form. Heredocs (`<<`) and line continuations fall under the characters above.
 | S.11 | `cmd arg # comment`, `# x`, `cmd #x` | `null` |
 | S.12 | `(cmd)`, `{ cmd; }`, `! cmd`, `if x; then y; fi`, `for i in a; do x; done`, `time make`, `function f { x; }` | `null` |
 | S.13 | `cmd\nother`, `cmd\r\nother`, `cmd\u0000`, `cmd \u001b[31m`, `cmd\u000bx` (VT), `cmd\u000cx` (FF), `cmd\u0085x` (NEL) | `null` |
-| S.14 | Unicode: NBSP `cmd\u00a0x`, `cmd\u2028x`, `cmd\u200bx` (zero width), `cmd\u202ex` (RLO), `cmd\ufeffx` (BOM), fullwidth `；` | `null` for whitespace, bidi and format characters; a fullwidth `；` (U+FF1B) is an ordinary character in sh, so it is part of a word: `['cmd','；']` is allowed only if the test confirms a real shell agrees (it does). Other ordinary non-ASCII letters are allowed |
+| S.14 | any non-ASCII character: `cmd é`, `cmd "é"`, `cmd 'é'`, NBSP `cmd\u00a0x`, `cmd\u2028x`, zero width `cmd\u200bx`, RLO `cmd\u202ex`, BOM `cmd\ufeffx`, fullwidth `；`, `cmd 日本` | all `null` (E5; the cost is only a grant clear) |
+| S.26 | `exec_shell` runs `/bin/sh -c` | a tool-level test asserts the spawned executable is `/bin/sh` with args `['-c', command]` and the env has no `SHELL` influence; `=git status`, `cmd =x`, `a =b` are `null` (S.27) |
 | S.15 | unbalanced: `echo 'a`, `echo "a`, `echo a'`, `echo "a'b`, `echo '` | `null` |
 | S.16 | `` (empty), ` `, `\t`, `''`, `"" x` | all `null` (empty command, or an empty first word) |
 | S.17 | `win32` platform with `git status` | `null` |
@@ -180,80 +186,76 @@ form. Heredocs (`<<`) and line continuations fall under the characters above.
 | S.24 | `cmd "a\tb"` with a literal tab inside quotes | accepted (tab is allowed in quotes) |
 | S.25 | alias or function names are not special: `ll`, `cd x` | `['ll']`, `['cd','x']` (builtins are plain argv; `cd x && y` is `null`) |
 
-### 2.2 The invariant, fuzzed against a real shell (safety design first)
+### 2.2 The invariant, tested against a real shell (guarded execution only)
 
 **Invariant:** if `simpleArgvOf(c)` returns `argv`, then a real POSIX shell running `c` runs the
 harness exactly once with exactly that `argv`.
 
-**This test runs generated strings in real `sh` and `bash`, and the strings it hunts for are the
-ones that smuggle commands.** A parser bug must not run a payload on a developer's machine. The
-design below is mandatory and is written at the top of the test file as well (chief conditions).
+**Safety rule (reviewer E1, adopted by the chief).** The earlier "closed grammar" design was not
+airtight: bash lets a function be NAMED with the harness's absolute path (`H(){ H|H& };H` is a fork
+bomb), an empty `PATH` element means the current directory on macOS `/bin/sh`, `$0` is a real shell,
+and loops plus `&` repeat without bound. Safety cannot depend on the generator's model of "command
+start". So: **a rejected string is NEVER executed, and an accepted string is executed only after an
+independent guard confirms it is a single harness call over a harmless vocabulary.**
 
-1. **(a) Closed vocabulary, not free-form strings.** The generator emits a token sequence from a
-   fixed grammar, never a free string.
-   - A *command word* is always the **absolute path of the harness binary**, a literal token placed
-     by the generator, never an expansion. It is emitted at every command-start context: the start
-     of the string, after `;`, `&&`, `||`, `|`, `|&`, `&`, `(`, `{`, a newline, `then`, `else`, `do`,
-     `$(`, `` ` ``, `<(` and `>(`, after `!` and `time`, and after assignment prefixes.
-   - *Argument words* (and redirect targets, with a narrower set) come from a closed word list of
-     plain letters and digits: `a b c x y z 0 1 foo`. No slash, dot, tilde, `$`, `=`, quote or
-     backslash is part of a *word*; those characters appear only as separate, generator-placed
-     syntax tokens (quote marks, `$`, `$(`, backtick, `\`, `*`, `?`, `~`, `{`, `}`, `#`, `!`, `;`,
-     `|`, `&`, `<`, `>`, `(`, `)`, newline, tab, CR, NUL, U+0085, bidi and zero-width characters,
-     `$'`, here-doc markers).
-   - **Redirect targets** are drawn only from `a b c` (no expansion syntax in the target slot), so
-     no file outside the per-run temp directory can be named. The harness path never appears in a
-     redirect-target or argument slot.
-   - **No builtin or exec-capable word is in the vocabulary.** A unit test builds the forbidden set
-     from the shells themselves (`compgen -b` and `compgen -k` in `bash`, a fixed list for `sh`: `.`,
-     `:`, `eval`, `exec`, `exit`, `kill`, `cd`, `trap`, `source`, `read`, `set`, `type`, `command`,
-     `alias`, `wait`, `ulimit`, `umask`, `unset`, `export`, `readonly`, `shift`, `return`, `break`,
-     `continue`, `times`, `getopts`, `hash`, `jobs`, `fg`, `bg`, `disown`, `enable`, `builtin`,
-     `declare`, `local`, `let`, `mapfile`, `printf`, `echo`, `test`, `[`, `pushd`, `popd`, `dirs`)
-     and asserts that no vocabulary word is in it. The structural keywords `if then else elif fi for
-     in do while until done case esac select function time ! { }` are emitted only as generator
-     syntax tokens in their legal positions; they cannot execute anything.
-   - Any word that an expansion produces is also from the vocabulary (the harness prints only its
-     arguments, which are vocabulary words), so even `$(harness a)` in an odd position can only
-     yield `a`, which is "command not found" under an empty `PATH`.
-   - A **grammar self-check** unit test asserts, over many generated strings, that the harness path
-     token appears only in command-start positions and never inside the vocabulary, and that the
-     vocabulary excludes `/`, `.`, `~` and the forbidden set.
-2. **(b) The harness** is a tiny executable copied into a per-run temp directory with mode `0555`.
-   It prints its `argv[1..]` NUL-delimited to a fixed record file in that directory and touches a
-   sentinel file there, nothing else.
-3. **(c) Isolation per case:** environment fully scrubbed (`env -i` equivalent: an empty env object
-   passed to `spawn`), `PATH` empty, cwd = the per-run temp directory, `HOME` unset, no network by
-   construction (the harness opens none, the vocabulary names no `/dev/tcp`), a hard wall-clock
-   timeout and an output cap per case, spawned in its own process group and killed as a group on
-   exit, timeout, or test abort. The temp directory is removed afterwards. The shells are run with
-   `--noprofile --norc`, non-interactive, never with `-i`.
-4. **(d) Property:** for every generated string where `simpleArgvOf` returns non-null `argv`, in
-   `sh` AND `bash` the sentinel and record files show exactly one harness invocation with exactly
-   that argv, exit status 0. Any second invocation (or the shell running anything else) fails the
-   test; because the only runnable command word is the harness, a smuggled command can only show
-   up as an extra harness record. A one-directional second property: where the shell recorded more
-   than one harness call, or exited with a syntax error, `simpleArgvOf` returned `null`.
-5. **(e) Canary:** a deliberately broken parser (it wrongly accepts `a; b`, and a second variant that
-   accepts `$(...)`) is run through the same harness and the property MUST FAIL for it. A passing
-   canary run fails the suite. This proves the test can catch the bug.
-6. `sh -n` (syntax check only, nothing runs) is also run on every accepted string as an extra
-   cross-check.
-7. The shells are `/bin/sh` and `bash`. If either is missing the test FAILS LOUDLY with a typed
-   error (no skip). On macOS `/bin/sh` is bash in POSIX mode; the test records which implementation
-   ran.
-8. **Fallback if (a) cannot be made airtight in review:** do not execute shells. Replace the
-   property test with a differential test against a reference tokenizer plus `sh -n` for syntax
-   only. ag-reviewer decides; the executing form is kept only if they accept the design above.
-9. Runtime bound: pathological inputs (100k quotes, deep nesting characters) complete under a time
-   bound; the parser is one linear pass. At least 5,000 generated cases per run, a printed seed,
-   shrinking on, and adversarial seeds always in the corpus: the S.* rows, the A.29 forms, `\r`,
-   `\u0085`, bidi controls, NUL, `$'...'`, `\!`, here-strings, `{a,b}`, `~`, `<(x)`, `$((1))`,
-   `&>`, `|&`, and a trailing backslash, all written with the harness token in command positions.
-10. Dependency: `fast-check`, one exact version in the pnpm `catalog:` (whoever needs it first adds
-    the entry and the other package reuses it), within the release cooldown, no
-    `minimumReleaseAgeExclude`, justification in the commit body, and any pnpm config change
-    disclosed (LEARNINGS L-002).
+1. **Generation is free-form and never executed directly.** The generator produces candidate
+   strings (adversarial, any characters, the S.* rows, the A.29 forms, operators, expansions,
+   control characters, Unicode). Each goes to `simpleArgvOf` only.
+2. **Rejected direction (no execution at all).** For every candidate where `simpleArgvOf` returns
+   `null`, nothing runs. The checks are non-executing: (a) `sh -n` and `bash -n` (syntax check only)
+   on the candidate; (b) a small independent **reference tokenizer** in the test (separate code from
+   the parser, written from the POSIX grammar) classifies the candidate; a candidate the tokenizer
+   shows to be one simple command with only plain words and quotes must also parse to the same words
+   (so the parser is not wrongly strict beyond the documented conservative cases: backslash,
+   non-ASCII, leading `=`, `$`, glob characters, which are an explicit list in the test). The
+   direction "parser said null, the tokenizer says a pure multi-command or compound form" passes
+   trivially.
+3. **Accepted direction (execution only behind the guard).** For every candidate where
+   `simpleArgvOf` returns non-null `argv`, first the candidate must match the **independent guard**,
+   a regular language written separately from the parser:
+   `^[ \t]*<H>([ \t]+(<unquoted>|'<sq>'|"<dq>")+)*[ \t]*$`, where `<H>` is the harness's absolute
+   path (a fixed literal, no regex metacharacters, created as a random directory name of letters and
+   digits), `<unquoted>` is `[A-Za-z0-9_@%+:,./-]+` (note: no `=` first, no `$`, no backslash),
+   `<sq>` is `[A-Za-z0-9 _@%+=:,./-]*` and `<dq>` the same set. The guard accepts no `;`, `&`, `|`,
+   `<`, `>`, `(`, `)`, `{`, `}`, backtick, `$`, backslash, newline, or any non-ASCII character.
+   - **If the parser accepted a string the guard rejects, the test FAILS WITHOUT EXECUTING.** This is
+     how a buggy parser that accepts `a; b`, `$(x)`, or `f(){ f|f& }` is caught: by the guard, not by
+     running the payload.
+   - Strings that pass both are single harness calls with vocabulary arguments. Only these run.
+4. **Containment of the strings that do run** (defense in depth; they are harmless by construction):
+   - No function definition, `(`, `)`, `{`, `}` or `$` can occur in an executed string (the guard
+     forbids them), so no recursion or shadowing construct is reachable.
+   - `PATH` is set to a **dedicated empty directory** (not the empty string), and cwd is the per-run
+     temp directory.
+   - The shell is started through a **non-generated wrapper** with a fixed prelude:
+     `ulimit -t 2 -f 64 -n 32 -c 0` and, where supported, `-u` (process count) low; wall-clock
+     timeout 2 s; stdout and record-file size caps; own process group, killed as a group on timeout
+     or test abort; the per-run temp directory (mode 0700) is deleted afterwards.
+   - Environment fully scrubbed (an empty env object to `spawn`), `HOME` unset, no network (the
+     harness opens none).
+   - **Per-shell flags:** `bash --noprofile --norc -c`; for dash/`sh` no profile flags (dash
+     rejects them) and non-interactive; the test records which implementation `sh` is (macOS `sh` is
+     bash in POSIX mode).
+5. **Property (d):** for every executed string, in `sh` AND `bash`, the record and sentinel files
+   show exactly one harness invocation, exit status 0, and the NUL-delimited argv equals the parsed
+   `argv`. The harness is a tiny executable copied to the temp directory (mode 0555) that prints
+   `argv[1..]` NUL-delimited to a fixed record file and touches a sentinel.
+6. **Canary (e):** a deliberately broken parser (accepts `a; b`; a second variant accepts `$(x)`; a
+   third accepts `f(){ f|f& };f` shaped input) is run through the same pipeline and the test MUST
+   FAIL for each, at the guard, and a passing canary run fails the suite. The canary payloads are
+   never executed, which a test asserts through the execution counter staying at zero for them.
+7. **Adversarial corpus** is always included and always goes through the same pipeline: the S.* rows,
+   the A.29 forms, `\r`, `\u0085`, bidi controls, NUL, `$'...'`, `\!`, here-strings, `{a,b}`, `~`,
+   `<(x)`, `$((1))`, `&>`, `|&`, a trailing backslash, and the reviewer's three probes (a function
+   named with the harness path, an empty-`PATH` cwd executable `a`, and `$0`). All must either be
+   rejected by the parser or, if accepted, be rejected by the guard and fail the test.
+8. At least 5,000 generated cases per run, a printed seed, shrinking on, a time bound on pathological
+   inputs (100k quotes, deep nesting). `/bin/sh` and `bash` must exist or the test FAILS LOUDLY (no
+   skip).
+9. `fast-check` as a pinned devDependency, one exact version in the pnpm `catalog:` (whoever needs it
+   first adds the entry, the other package reuses it), within the release cooldown, no
+   `minimumReleaseAgeExclude`, justification in the commit body, and any pnpm config change disclosed
+   (LEARNINGS L-002).
 
 ## 3. Wiring (for the gate)
 
