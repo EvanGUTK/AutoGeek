@@ -84,6 +84,13 @@ core `check()` is the same call narrowed to `PermissionDecision`.
    audit write fails, the decision becomes deny** (fail closed, via `audit_failed`).
 9. Return.
 
+**Env (contract §11).** Env is part of what runs.
+- Command rules (`argv`, `argv_prefix`, `shell`) never match a request with env.
+- Session-grant keys include `class` and canonical env.
+- A redacted value, or a key the injected `EnvKeyClassifier` (a core port, implemented by
+  ag-workspace per L-005) doesn't call benign, makes the action elevated.
+- Grants are per root and cleared on root change and on `setTrust(false)`.
+
 **Injection invariant, enforced by structure as well as tests:**
 - No function in the package builds a rule from anything except (a) a validated `PolicyRuleInput`
   from the Settings path, or (b) `exactRuleFrom(request)` after an approver returned `'session'`.
@@ -423,6 +430,9 @@ Ownership and limits live in the façade, not in IPC code:
   shared secret redactor if one is planned. Otherwise permissions keeps a local one. I offer to
   write `toWireEvent` / `toWireAction` / `toWireMessage` in core myself after foundation merges,
   since I own their semantics and their exhaustive-switch tests.
+- **Needed in core (port, L-005):** `EnvKeyClassifier { isBenign(key: string): boolean }`,
+  implemented by ag-workspace and wired in desktop. Also the display-safe text function
+  (ag-foundation, specified by ag-ui), which every native-dialog text goes through.
 - **Needed from ag-workspace:** `GitRunner` (approved), the FS service read/atomic-write with a
   stale-content precondition, the realpath / sensitive classifier used by `edit_file`, and the
   trust query.

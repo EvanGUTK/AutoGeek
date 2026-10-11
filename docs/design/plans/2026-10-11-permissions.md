@@ -42,11 +42,21 @@ The contract wins on any difference.
   3. ask;
   4. allow (exact-only if elevated) or session grant;
   5. baseline (non-sensitive `fs_read` → allow, else ask).
-- Elevated (contract §2) = any of:
+- Elevated (contract §2, §11) = any of:
   - sensitive `fs_read` / `fs_write`;
   - `fs_write` with `diffOmitted`;
   - `exec` class `destructive` | `network`;
+  - `exec` / `exec_shell` with any `{kind:'redacted'}` env value;
+  - `exec` / `exec_shell` with any env key the injected `EnvKeyClassifier` doesn't call benign;
   - `network`.
+- **Env (contract §11):**
+  - `argv` / `argv_prefix` / `shell` rules never match a request with a non-empty `env`;
+  - session-grant keys include `class` and canonical `env`;
+  - grants are per root and cleared on root change and on `setTrust(false)`.
+- **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through a core
+  port, `EnvKeyClassifier { isBenign(key: string): boolean }`, injected. If core doesn't have
+  the port when this slice starts, ask the chief and foundation to add it; don't define it
+  locally. The classifier is never optional: no classifier, no gate.
 - `offered` always includes `'deny'` and is exactly what main accepts:
   - in-root actions: `['deny','once']`, plus `'session'` iff not elevated;
   - outside root: policy deny, no prompt.
@@ -142,7 +152,8 @@ Semantics:
 - For `path` / `path_glob`: deny and ask rules match if **any** `actionPaths` element matches;
   allow rules only if **all** do. Outside-root paths never match.
 - `argv` / `argv_prefix` match only `exec`. `shell` matches only `exec_shell`. `cwd`, when
-  present, is compared root-relative.
+  present, is compared root-relative. **None of the three ever matches a request whose `env`
+  has at least one key** (contract §11).
 - `url`: method compared uppercase, url exact.
 - `mcp`: `server` equal, `tool` equal when given, `input` canonical-JSON equal when given.
 - `any` matches everything.
@@ -155,6 +166,9 @@ Semantics:
   - `shell 'npm test'` never matches `exec ['npm','test']`, and `argv` never matches `exec_shell`;
   - mcp `input` key order doesn't affect matching;
   - `rename requires every path for allow, any path for deny` (Review Focus 1);
+  - `command rules never match a request with env`: `argv ['npm','test']`, `argv_prefix ['npm']`
+    and `shell 'npm test'` vs the same request plus `env {CI:{kind:'plain',value:'1'}}` → no
+    match, even for a benign key;
   - `risk: 'network'` + `any` matches the mcp action from a network tool only.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** One `switch (rule.match.kind)` with
   `assertNever`, and a picomatch matcher built per call from `glob` with `{ dot: true }`.
@@ -167,20 +181,26 @@ Semantics:
 
 **Interfaces:**
 - Produces:
-  - `isElevated(action: PermissionAction): boolean`
-  - `offeredOptions(action: PermissionAction): readonly ApprovalOption[]`: in-root only;
-    outside is handled by the hard checks.
+  - `isElevated(action: PermissionAction, env: EnvKeyClassifier): boolean`
+  - `offeredOptions(action: PermissionAction, env: EnvKeyClassifier): readonly ApprovalOption[]`:
+    in-root only; outside is handled by the hard checks.
   - `isExactRule(rule: PolicyRule): boolean`: `path`, `argv`, `shell`, `url`, and `mcp` with
     `input`.
-  - `evaluate(args: { rules: readonly PolicyRule[] | 'unavailable'; grants: SessionGrantMatcher; req: PermissionRequest; root: { realpath: string; rootKey: string } }): Evaluation`
+  - `evaluate(args: { rules: readonly PolicyRule[] | 'unavailable'; grants: SessionGrantMatcher; req: PermissionRequest; root: { realpath: string; rootKey: string }; env: EnvKeyClassifier }): Evaluation`
   - `type Evaluation = { effect: 'allow'; via: 'rule' | 'session_grant' | 'baseline'; ruleId?: string } | { effect: 'deny'; via: 'rule'; ruleId: string } | { effect: 'ask'; via: 'rule' | 'default'; ruleId?: string }`
   - `interface SessionGrantMatcher { matches(rootKey: string, req: PermissionRequest): string | null }`
     (returns the grant id). Grants are per root, so an `mcp` grant (which has no path) never
     carries over to another root. Task 5 implements it; tests here use a stub.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `elevated table`: all four elevated cases are true; a plain in-root non-sensitive write with
-    `diff` is false.
+  - `elevated table`: every elevated case in Global Constraints is true; a plain in-root
+    non-sensitive write with `diff` is false. Env rows, using a stub classifier where only
+    `CI` is benign:
+    - `{}` / no env → false;
+    - `{CI: plain}` → false;
+    - `{CI: redacted}` → true;
+    - `{NODE_OPTIONS: plain}` → true;
+    - `{Ci: plain}` → true (case matters, fail closed).
   - `offeredOptions` gives `['deny','once','session']` vs `['deny','once']`.
   - `precedence`: deny beats allow on the same request; ask beats allow.
   - `broad allow never covers an elevated action`: `path_glob '**'` allow + sensitive write →
@@ -226,12 +246,15 @@ Semantics:
     plus exactly the contract §2 key fields:
     - fs_read: `[tool,'fs_read',path]`
     - fs_write: `[tool,'fs_write',op,path,to??null]`
-    - exec: `[tool,'exec',argv,cwd]`
-    - exec_shell: `[tool,'exec_shell',command,cwd]`
+    - exec: `[tool,'exec',argv,cwd,class,env??{}]`
+    - exec_shell: `[tool,'exec_shell',command,cwd,env??{}]`
+    - `env` is canonicalized as an object, so key order doesn't matter. A redacted value can't
+      reach a grant, because it makes the action elevated.
     - mcp: `[tool,'mcp',server,toolName,input]`
     - network: never a grant, so throw a programmer error.
   - `createSessionGrantStore(deps: { clock: () => number; newId: () => string }): SessionGrantStore`
-  - `interface SessionGrantStore extends SessionGrantMatcher { grant(rootKey: string, req: PermissionRequest): SessionGrant; list(rootKey: string): readonly SessionGrant[]; revoke(id: string): boolean }`
+  - `interface SessionGrantStore extends SessionGrantMatcher { grant(rootKey: string, req: PermissionRequest): SessionGrant; list(rootKey: string): readonly SessionGrant[]; revoke(id: string): boolean; clear(rootKey: string): readonly SessionGrant[] }`.
+    `clear` returns the removed grants so the caller can audit them.
   - `interface SessionGrant { id: string; rootKey: string; key: string; tool: string; action: PermissionAction; createdAt: number }`
 
 - [ ] **Step 1: Write the failing tests.**
@@ -239,6 +262,9 @@ Semantics:
     over every field);
   - `description` and provenance don't affect the key;
   - a grant made under root A doesn't match the same request under root B;
+  - `clear(rootKey)` removes only that root's grants and returns them;
+  - an exec grant doesn't match the same argv with a different env value, an added env key,
+    or a different `class`;
   - `revoke` removes the grant and returns false for an unknown id;
   - granting an elevated request throws. The gate never calls it for one, so this is a
     programmer error, not a `Result`.
@@ -255,10 +281,10 @@ alongside.
     `Bearer\s+\S+`, `sk-[A-Za-z0-9_-]{16,}`, `gh[pousr]_[A-Za-z0-9]{20,}`, `AKIA[0-9A-Z]{16}`,
     `(?i)(password|passwd|secret|token|api[_-]?key)=[^\s&]+`, `xox[baprs]-[A-Za-z0-9-]{10,}`.
     If foundation ships a core redactor, use it instead and delete this file.
-  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } })`
+  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked'; count: number })`
   - `toAuditAction(action: PermissionAction): AuditAction`: `diff` is replaced by
-    `diffBytes: number`; every `env` value, `command`, `argv` element and `url` goes through
-    `redactSecrets`.
+    `diffBytes: number`. Every plain `env` value, `command`, `argv` element and `url` goes through
+    `redactSecrets`. `{kind:'redacted'}` env values stay as they are.
   - `interface AuditSink { append(entry: AuditEntry): Promise<Result<void, { code: 'audit_write_failed'; cause: string }>> }`
   - `createJsonlAuditSink(opts: { path: string }): AuditSink`: opens lazily with
     `fs.open(path, 'a', 0o600)` and serializes writes on a promise chain, one `write` per
@@ -314,7 +340,7 @@ alongside.
   - `interface ApprovalPrompt { approvalId: string; request: PermissionRequest; offered: readonly ApprovalOption[] }`
   - `interface DetailedDecision { decision: PermissionDecision; via: DecisionVia; ruleId?: string }`
   - `interface DetailedPermissionGate { checkDetailed(req: PermissionRequest, signal: AbortSignal): Promise<DetailedDecision> }`
-  - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
+  - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; env: EnvKeyClassifier; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
 
 Algorithm: design §2 steps 1–9. `approvalId = req.provenance.checkId`. The approver is raced
 against `signal`. The audit `literal` is `redactSecrets(renderLiteral(action))`. An approver that rejects or returns a value outside `offered` → deny `user` /
@@ -343,7 +369,7 @@ audit append fails, return deny `policy` / `audit_failed`.
 **Interfaces:**
 - Produces:
   - `createApprovalBroker(deps: { emit(e: BrokerEvent): void; grants: SessionGrantStore; rules: RuleStore; workspace: …same as gate…; confirm(text: string): Promise<boolean>; audit: AuditSink }): ApprovalBroker`
-  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
+  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
   - `type BrokerEvent = { type: 'approval_requested'; prompt: ApprovalPrompt } | { type: 'approval_resolved'; approvalId: string; outcome: 'allowed_once' | 'allowed_session' | 'denied' | 'run_stopped' }`
 
 Rules:
@@ -354,7 +380,10 @@ Rules:
 - `addRule` with effect allow calls `confirm(describeRuleForConfirm(input))` first: false →
   `user_declined`, and nothing is written.
 - Deny/ask rules skip the confirm.
-- Rule changes and revocations are audited.
+- Rule changes and revocations are audited. `clearSessionGrants` writes one `grants_cleared`
+  entry. desktop calls it on root change and on `setTrust(false)` (contract §11).
+- Every native-dialog text passes through core's display-safe function (contract §11) before
+  `confirm` sees it.
 
 Window filtering stays with the caller (`listPending(filter)`). The agent runtime knows the
 owner of each run.
@@ -384,6 +413,13 @@ owner of each run.
     increases by 1 iff the approver returned `'session'` for a non-elevated, in-root, valid
     request, and the new grant's key equals `grantKeyOf(rootKey, req)`.
   - `deny dominates`: if any deny rule matches, the decision is deny regardless of the answer.
+  - `env never widens`: for any exec/exec_shell request R and any env E ≠ R.env, no exact rule
+    and no session grant that allows R also allows R-with-E. Test `argv`/`shell` rules and the
+    grant created by approving R with `'session'`.
+  - `elevated env is never session-offered`: `offered` lacks `'session'` whenever env has a
+    redacted value or a non-benign key.
+  - `clear forgets`: after `clearSessionGrants(rootKey)`, every request previously allowed via
+    `session_grant` under that root asks again.
   - `nothing is allowed without an affirmative allow`: every `allow` has via `rule`,
     `session_grant`, `baseline` or `user_once`/`user_session`, and an audit entry.
   - `index exports only the public surface`: an `Object.keys(await import('./index'))` snapshot.

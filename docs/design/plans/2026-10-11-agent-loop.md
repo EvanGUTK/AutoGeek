@@ -439,6 +439,11 @@ no test helpers).
     `toWire*`).
     - Ring buffer: 5_000 events / 4 MiB per run; 10 runs and 32 MiB per owner, evicting the
       oldest first.
+    - `listRuns` entries carry `firstSeq`, `lastSeq` and `undone` (contract §11). `undone` stays
+      `false` until the checkpoints slice adds `undoRun`, which sets it.
+    - Budgets per run come from the injected `budgetsFor(): RunBudgets` (desktop reads the
+      `agent.budgets` setting). The runtime still validates them against the contract schema
+      and refuses to start on invalid budgets (typed error).
     - `send` during an active run → `conflict { kind: 'run_active' }`.
     - A foreign owner's ids → `not_found`.
 
@@ -448,6 +453,9 @@ no test helpers).
   - replay paging and `gap`;
   - the per-owner byte cap evicts the oldest run;
   - `stop` is idempotent;
+  - `listRuns reports firstSeq after eviction`;
+  - `budgetsFor is read at each run start` (change between runs → the second run uses the new
+    value);
   - `send` while active → conflict;
   - a session's tool list is identical across runs in different modes.
 - [ ] **Steps 2–5**, then commit `feat(agent): add sessions and the agent runtime façade`.
