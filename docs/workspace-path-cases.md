@@ -314,3 +314,18 @@ behavior wins and the case says so.
 
 Any further divergence found by the differential test must be added here before the test is allowed
 to exclude it.
+
+## 12. Watcher state event
+
+Event `workspace.fsWatchState` (main to renderer, no per-file data; payload validated by zod in
+`core`): `{ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' }`.
+Sent on every transition and once when a window subscribes. `workspace.fsChanged` keeps its shape.
+
+| # | Scenario | Expected |
+|---|---|---|
+| 12.1 | ignore caps trip (11.12b) | watcher uses the fixed excludes, emits `degraded` / `ignore_rules_limit`, and keeps delivering `fsChanged` for non-excluded paths |
+| 12.2 | the OS watch limit is hit (`ENOSPC`, `EMFILE`) | `degraded` / `watch_limit`; watched directories are bounded by a named cap; no crash and no leaked handles |
+| 12.3 | the event queue overflows (rename storm, `git checkout` of a large tree) | events coalesce; if still over the cap, `degraded` / `overflow` and one synthetic "rescan" `fsChanged` batch instead of an unbounded list; state returns to `ok` after the rescan |
+| 12.4 | the watcher errors (root removed, permission lost) | `degraded` / `watch_error`; no retry storm (bounded backoff) |
+| 12.5 | recovery | `ok` is emitted; a test asserts there is no flapping inside the debounce window |
+| 12.6 | dispose | every handle is closed and no timer survives (asserted with a handle counter) |
