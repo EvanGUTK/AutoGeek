@@ -295,7 +295,7 @@ describe('anthropic provider: listModels', () => {
           cacheRead: 200_000,
           cacheWrite: 5_000_000,
         },
-        source: 'api',
+        source: 'catalog',
       },
       {
         providerId: 'anthropic',

@@ -53,30 +53,37 @@ function current(
 }
 
 const PROFILES: Readonly<Record<string, AnthropicModelProfile>> = {
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-fable-5-1': current('Claude Fable 5.1', {
     midConversationSystem: true,
     pricing: price(10, 50, 0.25),
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-mythos-5-1': current('Claude Mythos 5.1', {
     midConversationSystem: true,
     pricing: price(10, 50, 0.25),
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-fable-5': current('Claude Fable 5', {
     midConversationSystem: true,
     pricing: price(10, 50, 1),
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-mythos-5': current('Claude Mythos 5', {
     midConversationSystem: true,
     pricing: price(10, 50, 1),
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-opus-5-5': current('Claude Opus 5.5', {
     midConversationSystem: true,
     pricing: price(4, 20, 0.2),
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-opus-5': current('Claude Opus 5', {
     midConversationSystem: true,
     pricing: price(5, 25, 0.5),
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-opus-4-8': current('Claude Opus 4.8', {
     midConversationSystem: true,
     pricing: price(5, 25, 0.5),
@@ -86,10 +93,12 @@ const PROFILES: Readonly<Record<string, AnthropicModelProfile>> = {
     midConversationSystem: false,
     efforts: NO_XHIGH,
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-sonnet-5-5': current('Claude Sonnet 5.5', {
     midConversationSystem: true,
     pricing: price(2, 10, 0.2),
   }),
+  // Price: https://platform.claude.com/docs/en/about-claude/models/overview.md, verified 2026-10-11.
   'claude-sonnet-5': current('Claude Sonnet 5', {
     midConversationSystem: false,
     pricing: price(2, 10, 0.2),

@@ -220,7 +220,9 @@ function toModelInfo(entry: unknown): ModelInfo | undefined {
       promptCaching: 'yes',
     },
     ...(profile?.pricing === undefined ? {} : { pricing: { ...profile.pricing } }),
-    source: 'api',
+    // Limits come from the API; prices only ever come from the catalog, so a priced entry is
+    // marked 'catalog' and the UI shows its cost as an estimate.
+    source: profile?.pricing === undefined ? 'api' : 'catalog',
   };
   return ModelInfoSchema.safeParse(info).success ? info : undefined;
 }
