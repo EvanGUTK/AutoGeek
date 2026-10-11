@@ -66,7 +66,18 @@ The contract wins on any difference.
   - that call clears the root's exec / exec_shell grants;
   - it is audited as `grants_cleared` with reason `work_tree_mutated`;
   - a call that's rejected or skipped (never started) doesn't clear;
-  - arbitrary exec / exec_shell **never** clears, because that would nullify exec grants.
+  - arbitrary exec / exec_shell doesn't clear, because that would nullify exec grants.
+- **Exec that may rewrite exec vectors (chief ruling "A").** On any `allow` for `exec`
+  (`argv`) or `exec_shell`, the gate checks the port.
+  - For `exec_shell`, the argv is `simpleArgvOf(command)`. `null` counts as mutating (fail
+    closed).
+  - If `execMayRewriteVectors(argv)` is true, or the port throws, call
+    `grants.clearExec(rootKey)` and audit `grants_cleared` / `exec_vector_exec`.
+  - The classification directions are ag-workspace's tables:
+    - `git` uses a read-only ALLOWLIST: unknown subcommands, alias-looking tokens and
+      unparseable global options are mutating;
+    - package managers use a mutating DENYLIST, so `test`/`run`/`exec` keep grants;
+    - unknown executables are non-mutating (a documented residual).
 - **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through the core
   port `EnvKeyClassifier`, which ag-agent defines in core in Task 0. The chief granted edit
   rights to that one file plus its one registration line. The classifier is never optional:
@@ -129,8 +140,14 @@ Nothing else in core is touched.
   invariants live in tested core code, not in each implementation.
 
 - Also produces (second file, `src/ports/exec-vector-classifier.ts`, one more export line):
-  `interface ExecVectorClassifier { isExecVector(canonicalRelativePath: string): boolean }`.
-  The doc comment, as agreed with ag-workspace:
+  `interface ExecVectorClassifier { isExecVector(canonicalRelativePath: string): boolean; execMayRewriteVectors(argv: readonly string[]): boolean; simpleArgvOf(command: string): readonly string[] | null }`.
+  `simpleArgvOf` is a conservative shell-word parse. It returns argv only for a single simple
+  command, and `null` for pipes, redirects, `;`/`&&`/`||`, `$()`/backticks, globs, env-assignment
+  prefixes, heredocs, unbalanced quotes, line continuations, or anything uncertain.
+  `execMayRewriteVectors` takes the basename of argv[0] (`/usr/bin/git`, `git.exe`) and skips
+  git global options (`-C`, `-c`, `--git-dir=`, `--work-tree=`, …) before the subcommand. If
+  that skip can't be done with certainty, it returns true.
+  The doc comment for `isExecVector`, as agreed with ag-workspace:
   - input is POSIX, root-relative, with no leading `./`;
   - matching is anchored-pattern and case-INSENSITIVE (ASCII fold plus NFC/NFD), because more
     matches means more clearing, which is safer;
@@ -362,7 +379,7 @@ alongside.
     `Bearer\s+\S+`, `sk-[A-Za-z0-9_-]{16,}`, `gh[pousr]_[A-Za-z0-9]{20,}`, `AKIA[0-9A-Z]{16}`,
     `(?i)(password|passwd|secret|token|api[_-]?key)=[^\s&]+`, `xox[baprs]-[A-Za-z0-9-]{10,}`.
     If foundation ships a core redactor, use it instead and delete this file.
-  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write' | 'work_tree_mutated'; count: number })`
+  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write' | 'exec_vector_exec' | 'work_tree_mutated'; count: number })`
   - `toAuditAction(action: PermissionAction): AuditAction`: `diff` is replaced by
     `diffBytes: number`. Every plain `env` value, `command`, `argv` element and `url` goes through
     `redactSecrets`. `{kind:'redacted'}` env values stay as they are.
@@ -431,7 +448,9 @@ alongside.
 the runtime half; the required property is the type-level half. Test:
 `gate refuses to construct without a classifier`.
 
-Algorithm: design §2 steps 1–9. After step 7, when the decision is `allow` for an `fs_write`
+Algorithm: design §2 steps 1–9. After step 7, on an `allow` for `exec`/`exec_shell` whose argv
+(`simpleArgvOf` for shell, `null` ⇒ mutating) satisfies `execMayRewriteVectors`, clear and audit
+`exec_vector_exec`. When the decision is `allow` for an `fs_write`
 whose `path` or `to` is an exec vector (checked on root-relative paths; a throw counts as true and
 raises a warning), call `grants.clearExec(rootKey)` and audit `grants_cleared` /
 `exec_vector_write`. This happens even when the clear removes nothing, so the audit shows the
@@ -521,6 +540,17 @@ owner of each run.
     - a classifier that throws clears (fail closed);
     - write, delete and rename (source and destination) each clear when they touch an exec
       vector.
+  - `mutating exec re-arms exec approvals` (chief). Use a table-driven fake port in this
+    package; ag-workspace's real tables are tested in theirs:
+    - grant `npm test`, then `git status` approved → still allowed;
+    - `git checkout x` approved → asks again;
+    - `git -c alias.x=checkout x` and `git --git-dir=/x checkout y` → clears;
+    - `npm test` / `npm run build` approved → keeps; `npm install` → clears;
+    - `exec_shell 'make test'` → keeps; `'git checkout x && make test'` → clears (`simpleArgvOf`
+      returns null);
+    - `exec_shell` with any metacharacter → clears;
+    - an unknown executable → keeps;
+    - a throwing port → clears.
   - `work-tree mutation re-arms exec approvals` (chief):
     - grant → `noteWorkTreeMutated` → the same exec asks again;
     - per root only;
