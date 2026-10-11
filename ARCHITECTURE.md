@@ -93,6 +93,11 @@ imports `apps/desktop`. No cycles.
 
 These are the contracts every agent codes against. Changing one requires the chief's sign-off.
 
+> **The model seam (`ContentPart`, `Message`, `ModelRequest`, `ModelEvent`, `ProviderError`,
+> `ModelInfo`, `ModelProvider`) is specified authoritatively in `docs/model-contract.md`.** The
+> snippets below are illustrative; where they differ, that file wins. Notably `listModels` returns
+> `Promise<Result<ModelInfo[], ProviderError>>` and `stream()` never throws.
+
 ```ts
 // Normalized conversation model — the ONLY thing the agent loop sees.
 type Role = 'system' | 'user' | 'assistant' | 'tool';
