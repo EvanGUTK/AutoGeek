@@ -60,20 +60,20 @@ the table cannot rot.
 | `--ag-surface` | `#1b1e24` | `#f5f6f8` | Side bar, panels, status bar |
 | `--ag-raised` | `#232730` | `#ffffff` | Cards, inputs, tab strip |
 | `--ag-overlay` | `#2a2f3a` | `#ffffff` | Menus, dialogs, tooltips, command palette |
-| `--ag-selected` | `#2f3f5c` | `#d6e4fb` | Selected row / active item background |
+| `--ag-selected` | `#243049` | `#d6e4fb` | Selected row / active item background (also carries a 2px leading `--ag-accent` bar, so selection is not shown by fill alone) |
 
-**Foreground** (floor 4.5:1 on all four surfaces)
+**Foreground** (floor 4.5:1 on all five surfaces, selected included)
 
 | Token | Dark | Light | Min contrast (dark / light) | Use |
 |---|---|---|---|---|
-| `--ag-text` | `#e6e8ee` | `#1a1d24` | 10.95 / 15.60 | Body text |
-| `--ag-text-muted` | `#a3a9b8` | `#4a5163` | 5.70 / 7.33 | Secondary text, labels |
-| `--ag-text-subtle` | `#9199aa` | `#5c6477` | 4.69 / 5.48 | Placeholders, hints, disabled-adjacent metadata |
-| `--ag-accent` | `#6ea8ff` | `#0a5bd6` | 5.56 / 5.58 | Links, active indicators |
-| `--ag-danger` | `#ff8a80` | `#b3261e` | 5.87 / 6.04 | Errors, destructive, deny |
-| `--ag-warning` | `#f2c264` | `#8a5a00` | 8.09 / 5.48 | Cautions, write/exec risk |
-| `--ag-success` | `#6fd39a` | `#1b6e3f` | 7.32 / 5.80 | Success, added lines |
-| `--ag-info` | `#7cc4ff` | `#0b5f99` | 7.15 / 6.24 | Informational |
+| `--ag-text` | `#e6e8ee` | `#1a1d24` | 10.75 / 13.13 | Body text |
+| `--ag-text-muted` | `#a3a9b8` | `#4a5163` | 5.60 / 6.17 | Secondary text, labels |
+| `--ag-text-subtle` | `#9199aa` | `#5c6477` | 4.61 / 4.61 | Placeholders, hints, disabled-adjacent metadata |
+| `--ag-accent` | `#6ea8ff` | `#0a5bd6` | 5.46 / 4.70 | Links, active indicators |
+| `--ag-danger` | `#ff8a80` | `#b3261e` | 5.77 / 5.09 | Errors, destructive, deny |
+| `--ag-warning` | `#f2c264` | `#8a5a00` | 7.95 / 4.61 | Cautions, write/exec risk |
+| `--ag-success` | `#6fd39a` | `#1b6e3f` | 7.19 / 4.88 | Success, added lines |
+| `--ag-info` | `#7cc4ff` | `#0b5f99` | 7.02 / 5.26 | Informational |
 | `--ag-on-accent` | `#0b1220` | `#ffffff` | 7.76 / 6.03 on `--ag-accent` fill | Text on filled accent buttons |
 
 Disabled controls are exempt from contrast requirements by WCAG, but they still keep a legible
@@ -85,11 +85,16 @@ shape: disabled uses `--ag-text-subtle` at the same contrast as above plus a non
 | Token | Dark | Light | Contrast | Use |
 |---|---|---|---|---|
 | `--ag-border` | `#3a4050` | `#d5d9e2` | decorative, no floor | Dividers, panel separators at rest |
-| `--ag-border-strong` | `#7a8296` | `#767d90` | ≥ 3.49 / ≥ 3.80 | Input, button, checkbox boundaries (1.4.11) |
-| `--ag-focus` | `#8ab8ff` | `#0a5bd6` | ≥ 6.63 / ≥ 5.58 | Focus ring |
+| `--ag-border-strong` | `#7a8296` | `#767d90` | ≥ 3.43 / ≥ 3.20 | Input, button, checkbox boundaries, and icons inside selected rows (1.4.11) |
+| `--ag-focus` | `#8ab8ff` | `#0a5bd6` | ≥ 6.51 / ≥ 4.70 | Focus ring |
 
 State layering (hover, pressed) is expressed as a tint of `--ag-text` at 8% / 14% over the base
-surface, so it works on every surface without per-surface tokens. Accent-filled buttons hover to
+surface, so it works on every surface without per-surface tokens. A tint lowers the contrast of
+secondary foregrounds (measured: dark `--ag-text-subtle` on a pressed selected row falls to 3.11),
+so **in hover, pressed and selected+hover states `--ag-text-muted`, `--ag-text-subtle` and
+`--ag-accent` text resolve to `--ag-text`**. The token test builds every surface × state
+(rest, hover, pressed) combination and fails the build below the floor, so the tables above cannot
+rot. Accent-filled buttons hover to
 `#8ab8ff` (dark, 9.26 with on-accent) and `#084bb0` (light, 7.94 with on-accent).
 
 **Diff and risk** never rely on color alone: added lines carry `+` and `--ag-success`, removed
