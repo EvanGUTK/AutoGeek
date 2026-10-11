@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { APP_NAMES, PACKAGE_NAMES } from './dependency-rules.ts';
 import { z } from 'zod';
 
 type Files = Readonly<Record<string, string>>;
@@ -308,5 +309,38 @@ describe('circumventions of the dependency rules', () => {
       'packages/agent/src/index.ts': exported,
     });
     expect(violations).toEqual([]);
+  });
+});
+
+describe('unknown workspace directories (fail closed)', () => {
+  it('a packages/ directory missing from the matrix may not import anything', async () => {
+    const violations = await violationsFor({
+      'packages/editor/src/index.ts': importer('../../agent/src/index.ts'),
+      'packages/agent/src/index.ts': exported,
+    });
+    expect(violations.map((v) => v.split(':')[0])).toContain('unknown-package');
+  });
+
+  it('an apps/ directory missing from the list may not import anything', async () => {
+    const violations = await violationsFor({
+      'apps/rogue/src/main.ts': importer('../../../packages/core/src/index.ts'),
+      'packages/core/src/index.ts': exported,
+    });
+    expect(violations.map((v) => v.split(':')[0])).toContain('unknown-app');
+  });
+
+  it('every directory under packages/ and apps/ in this repo is declared', async () => {
+    const root = join(import.meta.dirname, '..', '..');
+    const list = async (dir: string): Promise<string[]> =>
+      (await readdir(join(root, dir), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    const undeclaredPackages = (await list('packages')).filter(
+      (name) => !(PACKAGE_NAMES as readonly string[]).includes(name),
+    );
+    const undeclaredApps = (await list('apps')).filter(
+      (name) => !(APP_NAMES as readonly string[]).includes(name),
+    );
+    expect([...undeclaredPackages, ...undeclaredApps]).toEqual([]);
   });
 });
