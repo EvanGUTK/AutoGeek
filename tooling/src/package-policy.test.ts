@@ -138,6 +138,10 @@ describe('scripts (a package without them is silently skipped by `turbo run`)', 
     ['a typecheck that does not run tsc', 'typecheck', 'echo ok'],
     ['a typecheck that emits', 'typecheck', 'tsc -p tsconfig.json && tsc -p tsconfig.test.json'],
     ['a typecheck of the product config only', 'typecheck', 'tsc --noEmit -p tsconfig.json'],
+    ['a typecheck whose failure is swallowed with || true', 'typecheck', `${TYPECHECK} || true`],
+    ['a typecheck followed by a statement separator', 'typecheck', `${TYPECHECK}; true`],
+    ['a typecheck piped to cat', 'typecheck', `${TYPECHECK} | cat`],
+    ['a test whose failure is swallowed with || true', 'test', 'vitest run || true'],
     ['a typecheck of the test config only', 'typecheck', 'tsc --noEmit -p tsconfig.test.json'],
     ['watch mode', 'test', 'vitest'],
     ['passWithNoTests', 'test', 'vitest run --passWithNoTests'],
@@ -509,6 +513,83 @@ describe('vitest configuration', () => {
   it('requires it to use the shared createVitestConfig factory', async () => {
     const own = "import { defineConfig } from 'vitest/config';\nexport default defineConfig({});\n";
     expect(codes(await check({ 'vitest.config.ts': own }))).toContain('vitest-config-bypass');
+  });
+
+  const shared = "import { createVitestConfig } from '@autogeek/tooling/vitest';\n";
+
+  it.each([
+    [
+      'B: its own defineConfig with createVitestConfig( only in a comment',
+      "// createVitestConfig(\nimport { defineConfig } from 'vitest/config';\nexport default defineConfig({ test: { include: ['nothing/**'], passWithNoTests: true } });\n",
+    ],
+    [
+      'B2: a string that contains createVitestConfig(',
+      "import { defineConfig } from 'vitest/config';\nconst note = 'createVitestConfig(';\nexport default defineConfig({ test: { include: [note] } });\n",
+    ],
+    [
+      'C: createVitestConfig with include and passWithNoTests options',
+      `${shared}export default createVitestConfig({ include: ['nothing/**'], passWithNoTests: true });\n`,
+    ],
+    [
+      'C2: options other than testTimeout',
+      `${shared}export default createVitestConfig({ retry: 5 });\n`,
+    ],
+    [
+      'C3: a non-literal testTimeout',
+      `${shared}export default createVitestConfig({ testTimeout: Number('1') });\n`,
+    ],
+    [
+      'a spread that can inject options',
+      `${shared}const extra = { include: [] };\nexport default createVitestConfig({ ...extra });\n`,
+    ],
+    [
+      'a side effect before the export',
+      `${shared}process.exitCode = 0;\nexport default createVitestConfig();\n`,
+    ],
+    [
+      'the result mutated after creation',
+      `${shared}const config = createVitestConfig();\nconfig.test = {};\nexport default config;\n`,
+    ],
+    [
+      'a config object that merely contains the call',
+      `${shared}export default { ...createVitestConfig(), test: { include: [] } };\n`,
+    ],
+    [
+      'a createVitestConfig imported from somewhere else',
+      "import { createVitestConfig } from './fake.ts';\nexport default createVitestConfig();\n",
+    ],
+    [
+      'an aliased import',
+      "import { createVitestConfig as cfg } from '@autogeek/tooling/vitest';\nexport default cfg();\n",
+    ],
+    [
+      'a statement after the export',
+      `${shared}export default createVitestConfig();\nprocess.exitCode = 0;\n`,
+    ],
+    [
+      'another export imported under the createVitestConfig name',
+      "import { defineConfig as createVitestConfig } from '@autogeek/tooling/vitest';\nexport default createVitestConfig();\n",
+    ],
+    [
+      'a type-only import',
+      "import type { createVitestConfig } from '@autogeek/tooling/vitest';\nexport default createVitestConfig();\n",
+    ],
+    [
+      'a named export instead of the default export',
+      `${shared}export const config = createVitestConfig();\n`,
+    ],
+  ])('rejects a vitest.config.ts that bypasses the shared factory (%s)', async (_name, source) => {
+    expect(codes(await check({ 'vitest.config.ts': source }))).toContain('vitest-config-bypass');
+  });
+
+  it.each([
+    ['no options', `${shared}export default createVitestConfig();\n`],
+    [
+      'a literal testTimeout',
+      `${shared}export default createVitestConfig({ testTimeout: 60_000 });\n`,
+    ],
+  ])('accepts a vitest.config.ts that is exactly the factory call (%s)', async (_name, source) => {
+    expect(await check({ 'vitest.config.ts': source })).toEqual([]);
   });
 
   it.each(['vitest.workspace.ts', 'vitest.projects.ts', 'vitest.workspace.json'])(

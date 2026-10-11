@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -102,6 +102,79 @@ describe('shared vitest config', () => {
     const outcome = await runFixture(
       `${header}it.only('a', () => undefined);\nit('b', () => undefined);\n`,
     );
+    expect(outcome.exitCode).not.toBe(0);
+  });
+});
+
+describe('createVitestConfig ignores options that would hide tests (real CLI)', () => {
+  /** Runs vitest in a fresh directory whose config calls the factory with `args`. */
+  async function runWithConfig(args: string, files: Record<string, string>): Promise<RunOutcome> {
+    counter += 1;
+    const dir = join(sandbox, `config-case-${String(counter)}`);
+    await mkdir(dir, { recursive: true });
+    await symlink(join(REPO_ROOT, 'node_modules'), join(dir, 'node_modules'));
+    await writeFile(
+      join(dir, 'vitest.config.ts'),
+      `import { createVitestConfig } from ${JSON.stringify(SHARED_CONFIG)};\nexport default createVitestConfig(${args});\n`,
+    );
+    for (const [name, content] of Object.entries(files)) {
+      await writeFile(join(dir, name), content);
+    }
+    return execFileAsync(process.execPath, [VITEST_BIN, 'run'], { cwd: dir }).then(
+      (result) => ({ exitCode: 0, output: result.stdout + result.stderr }),
+      (failure: unknown) => {
+        if (typeof failure === 'object' && failure !== null && 'code' in failure) {
+          const { code } = failure;
+          const stdout =
+            'stdout' in failure && typeof failure.stdout === 'string' ? failure.stdout : '';
+          const stderr =
+            'stderr' in failure && typeof failure.stderr === 'string' ? failure.stderr : '';
+          if (typeof code === 'number') {
+            return { exitCode: code, output: stdout + stderr };
+          }
+        }
+        throw failure;
+      },
+    );
+  }
+
+  const failing = {
+    'broken.test.ts': `${header}it('really fails', () => { expect(1).toBe(2); });\n`,
+  };
+
+  it('control: with no options a failing test fails the run', async () => {
+    const outcome = await runWithConfig('', failing);
+    expect(outcome.exitCode).not.toBe(0);
+    expect(outcome.output).toContain('really fails');
+  });
+
+  it('passWithNoTests: true cannot make an empty run succeed', async () => {
+    const outcome = await runWithConfig('{ passWithNoTests: true }', {});
+    expect(outcome.exitCode).not.toBe(0);
+  });
+
+  it('an include pattern that matches nothing cannot hide a failing test', async () => {
+    const outcome = await runWithConfig(
+      "{ include: ['nothing/**'], passWithNoTests: true }",
+      failing,
+    );
+    expect(outcome.exitCode).not.toBe(0);
+    expect(outcome.output).toContain('really fails');
+  });
+
+  it('retry cannot turn a failing test into a pass', async () => {
+    const flaky = {
+      'flaky.test.ts': `${header}let n = 0;\nit('fails twice', () => { n += 1; expect(n).toBeGreaterThan(2); });\n`,
+    };
+    const outcome = await runWithConfig('{ retry: 5 }', flaky);
+    expect(outcome.exitCode).not.toBe(0);
+  });
+
+  it('allowOnly cannot be turned back on', async () => {
+    const only = {
+      'only.test.ts': `${header}it.only('a', () => undefined);\nit('b', () => undefined);\n`,
+    };
+    const outcome = await runWithConfig('{ allowOnly: true }', only);
     expect(outcome.exitCode).not.toBe(0);
   });
 });

@@ -380,17 +380,100 @@ function checkEnvironment(dir: string, manifest: Manifest): EnvironmentCheck {
   return { environment: parsed.data, violations };
 }
 
+/** Module that exports the shared factory, as imported from a package's vitest.config.ts. */
+function vitestFactorySpecifier(dir: string): string {
+  return dir === 'tooling' ? './src/vitest/config.ts' : '@autogeek/tooling/vitest';
+}
+
+/**
+ * True only for a vitest.config.ts that is EXACTLY
+ *   import { createVitestConfig } from '<shared module>';
+ *   export default createVitestConfig();            // or ({ testTimeout: <number literal> })
+ * Anything else (extra statements, aliases, other call arguments, a comment or string that merely
+ * contains the name) could change what runs, so it is rejected structurally, not by substring.
+ */
+function isSharedVitestConfig(source: string, specifier: string): boolean {
+  const file = ts.createSourceFile('vitest.config.ts', source, ts.ScriptTarget.Latest, true);
+  const [importStatement, exportStatement, ...rest] = file.statements;
+  if (importStatement === undefined || exportStatement === undefined || rest.length > 0) {
+    return false;
+  }
+  if (
+    !ts.isImportDeclaration(importStatement) ||
+    !ts.isStringLiteral(importStatement.moduleSpecifier) ||
+    importStatement.moduleSpecifier.text !== specifier ||
+    importStatement.attributes !== undefined
+  ) {
+    return false;
+  }
+  const clause = importStatement.importClause;
+  const bindings = clause?.namedBindings;
+  if (
+    clause === undefined ||
+    clause.phaseModifier !== undefined ||
+    clause.name !== undefined ||
+    bindings === undefined ||
+    !ts.isNamedImports(bindings) ||
+    bindings.elements.length !== 1
+  ) {
+    return false;
+  }
+  const [element] = bindings.elements;
+  if (
+    element === undefined ||
+    element.isTypeOnly ||
+    element.propertyName !== undefined ||
+    element.name.text !== 'createVitestConfig'
+  ) {
+    return false;
+  }
+  if (!ts.isExportAssignment(exportStatement) || exportStatement.isExportEquals === true) {
+    return false;
+  }
+  const call = exportStatement.expression;
+  if (
+    !ts.isCallExpression(call) ||
+    !ts.isIdentifier(call.expression) ||
+    call.expression.text !== 'createVitestConfig' ||
+    call.typeArguments !== undefined ||
+    call.questionDotToken !== undefined
+  ) {
+    return false;
+  }
+  const [argument, ...extra] = call.arguments;
+  if (argument === undefined) {
+    return true;
+  }
+  return extra.length === 0 && isTestTimeoutLiteral(argument);
+}
+
+function isTestTimeoutLiteral(node: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(node) || node.properties.length !== 1) {
+    return false;
+  }
+  const [property] = node.properties;
+  return (
+    property !== undefined &&
+    ts.isPropertyAssignment(property) &&
+    ts.isIdentifier(property.name) &&
+    property.name.text === 'testTimeout' &&
+    ts.isNumericLiteral(property.initializer)
+  );
+}
+
 async function checkVitest(root: string, dir: string): Promise<PackageViolation[]> {
   const path = join(root, dir, 'vitest.config.ts');
   if (!(await exists(path))) {
     return [{ dir, code: 'missing-vitest-config', detail: 'vitest.config.ts is required' }];
   }
-  if (!(await readFile(path, 'utf8')).includes('createVitestConfig(')) {
+  if (!isSharedVitestConfig(await readFile(path, 'utf8'), vitestFactorySpecifier(dir))) {
     return [
       {
         dir,
         code: 'vitest-config-bypass',
-        detail: 'vitest.config.ts must use createVitestConfig()',
+        detail:
+          'vitest.config.ts must be exactly `import { createVitestConfig } from "<shared module>"; ' +
+          'export default createVitestConfig();` (optionally with a literal testTimeout)',
       },
     ];
   }
