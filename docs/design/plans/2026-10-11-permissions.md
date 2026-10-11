@@ -117,9 +117,11 @@ its own ag-reviewer request:
 - **Root identity (chief ruling, ag-reviewer U1):**
   - `rootKey` is an OPAQUE token from ag-workspace's trust store (realpath + identity). This
     package never parses it.
-  - When the trust store reports an identity mismatch at open, desktop calls
-    `rules.quarantine(previousRootKeys)`. Those root-scoped rules are kept but not applied and
-    not deleted.
+  - When the trust store reports `identityChanged` at open, desktop calls
+    `rules.quarantine([...previousRootKeys, rootKey])`. **The current key is included**, so
+    A→B→A leaves A's rules quarantined even if the quarantine write during B failed or the
+    trust history was unreadable (in that case `previousRootKeys` is `[]`). Those root-scoped
+    rules are kept but not applied and not deleted.
   - They stay quarantined **even if the old identity, and so the old key, comes back**.
   - They become active again only via `reactivate`, after a native main-built confirm that
     lists them literally (display-safe, ≤ 50 rules per confirm).
@@ -421,7 +423,10 @@ alongside.
     `reactivate` is a single atomic write: either every named rule moves or none does.
     - `load` returns only active rules: global ones, plus root-scoped ones under `rootKey` that
       aren't quarantined.
-    - `quarantine` is idempotent and persisted.
+    - `quarantine` is idempotent and persisted. It marks the keys quarantined **in memory
+      first**, then persists. If persisting fails, the keys stay marked in memory and
+      `load(key)` returns `store_write_failed` until a later persist succeeds. The gate then
+      treats the rules as unavailable: no rules, no baseline, everything asks (fail closed).
     - `reactivate` moves the named rules from `from` to `to`, clears their quarantine, and
       accepts at most 50 ids (`too_many` otherwise).
   - `type RuleStoreError = { code: 'store_unreadable' | 'store_corrupt' | 'store_write_failed'; cause: string }`
@@ -459,6 +464,8 @@ alongside.
   - `quarantined rules are not loaded but are listed`;
   - `quarantine survives reload and a restored key` (`quarantine(['k1'])` → `load('k1')` has no
     root rules);
+  - `failed quarantine persist makes load unavailable` (injected write failure → `load(k)` is
+    `Err`, never the unquarantined rules);
   - `reactivate moves only the named rules and enforces ≤ 50`;
   - a `rootKey` of `'__proto__'` round-trips safely;
   - `reactivate is atomic` (inject a write failure: nothing moves, and the file stays
