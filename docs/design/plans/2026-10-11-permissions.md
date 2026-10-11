@@ -78,6 +78,11 @@ The contract wins on any difference.
       unparseable global options are mutating;
     - package managers use a mutating DENYLIST, so `test`/`run`/`exec` keep grants;
     - unknown executables are non-mutating (a documented residual).
+  - ag-workspace binds the platform when the classifier is built, which keeps the port
+    signature. Known consequence: on win32 `simpleArgvOf` always returns `null`, so on Windows
+    every approved `exec_shell` clears exec grants. Shell-string session grants are effectively
+    single-use there. That's accepted as fail closed and must be stated in the user-facing
+    approval docs. Argv `exec` grants are unaffected.
 - **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through the core
   port `EnvKeyClassifier`, which ag-agent defines in core in Task 0. The chief granted edit
   rights to that one file plus its one registration line. The classifier is never optional:
