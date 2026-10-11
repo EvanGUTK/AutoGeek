@@ -613,8 +613,8 @@ A prompt is one card (the **approval dock**, §5.5) containing, top to bottom:
    - **Unrecognized kind or a payload that fails validation:** see §5.5. The UI never degrades to a
      generic "The agent wants to continue".
 3. **`description` (optional, visually secondary):** model-written text appears below the action in
-   a block labeled "Agent's description (not verified)", in `--ag-text-muted`, as inert text,
-   collapsed past three lines. It never replaces or sits above the action and is never styled like a
+   a block labeled "Agent's description (not verified)", in `--ag-text-muted`, as inert text (through
+   the display-safe function with `lineEndings: 'prose'`), collapsed past three lines. It never replaces or sits above the action and is never styled like a
    system message.
 4. **Actions:** buttons per §5.3.
 
@@ -881,26 +881,30 @@ decides on what they see.
 interface DisplaySafeOptions {
   mode: 'block' | 'inline' | 'dialog';   // block: unlimited, multi-line. inline: one line, bounded.
                                          // dialog: bounded; exceeding the bound is refused, never cut
+  lineEndings?: 'literal' | 'prose';     // 'literal' (default): every CR is escaped, since a CR is part of
+                                         // what runs. 'prose' (model-written descriptions, plan text only):
+                                         // CRLF is read as a line break and counted in stats.normalizedCrlf
   maxChars?: number;                     // code points. inline default 256; dialog default 2_000; block none
 }
 type Segment =
   | { kind: 'text'; text: string }                       // contains no always-escaped code point
   | { kind: 'escape'; codePoint: number }                // rendered as ⟦U+XXXX⟧ (hex, upper case, ≥ 4 digits)
   | { kind: 'tab' }                                      // rendered as ⟦TAB⟧
-  | { kind: 'collapsed'; what: 'blank_lines' | 'spaces'; count: number }
+  | { kind: 'collapsed'; what: 'blank_lines' | 'spaces' | 'combining_marks'; count: number }
   | { kind: 'omitted'; chars: number };                  // inline only: ⟦…N more characters…⟧
 interface DisplaySafe {
   segments: Segment[];
   plain: string;                                         // the same content as one string, markers inline (for native dialogs)
-  stats: { chars: number; lines: number; hidden: number; truncated: boolean };
+  stats: { chars: number; lines: number; hidden: number; truncated: boolean; normalizedCrlf: number };
+                                                         // hidden = code points shown as an escape or inside a collapsed marker
   flags: { mixedScript: boolean; confusable: boolean };
   flagged: Array<[start: number, end: number]>;          // code-point ranges of tokens that set a flag
 }
 declare function displaySafe(input: string, options: DisplaySafeOptions): Result<DisplaySafe, 'too_long'>;
 ```
 
-It never changes the characters it keeps (no case folding, no normalization), so what is shown is what
-will be used. It is total (any string, including lone surrogates), deterministic (no locale, no
+It never changes the characters it keeps (no case folding, no normalization, no line-ending rewriting
+except the explicit `prose` option, which is counted), so what is shown is what will be used. It is total (any string, including lone surrogates), deterministic (no locale, no
 runtime-dependent Unicode data) and linear time.
 
 ### 8.2 Rules, in order
@@ -911,17 +915,30 @@ runtime-dependent Unicode data) and linear time.
    joiner, variation selectors, Hangul fillers, Mongolian free variation selectors); bidirectional
    controls (`U+061C`, `U+200E/200F`, `U+202A..202E`, `U+2066..2069`); zero-width characters
    (`U+200B..200D`, `U+2060..2064`, `U+FEFF`); tag characters (`U+E0000..E007F`); the line and
-   paragraph separators `U+2028/2029`; and **every space separator (Zs) except `U+0020`** (NBSP,
+   paragraph separators `U+2028/2029`; **every space separator (Zs) except `U+0020`** (NBSP,
    `U+2000..200A`, `U+202F`, `U+205F`, `U+3000`, `U+1680`), because an NBSP inside a shell command is
-   not a word break even though it looks like one.
-2. **Escape the marker characters themselves**: `⟦` (`U+27E6`) and `⟧` (`U+27E7`) in the input are
-   escaped, so input cannot imitate a marker.
-3. **Line breaks:** `\n` is a line break and `\r\n` is normalized to `\n`. A lone `\r` is escaped.
-   `\t` becomes a `tab` segment.
+   not a word break even though it looks like one; and **every enclosing mark (Me)** (`U+0488/0489`,
+   `U+20DD..20E0`, `U+20E2..20E4`, `U+A670..A672`), which draws a shape over its neighbours.
+2. **Escape the marker characters and their look-alikes**: `⟦` (`U+27E6`), `⟧` (`U+27E7`),
+   `〚` (`U+301A`) and `〛` (`U+301B`) in the input are escaped, so input cannot imitate a marker. A
+   native dialog shows `plain` as unstyled text, so this is the only protection there. The list is
+   explicit and is reviewed against the pinned UTS #39 confusables data whenever the Unicode version
+   changes (a test fails if a code point whose prototype is a double bracket is missing). In the
+   renderer, `escape`, `tab`, `collapsed` and `omitted` segments are also drawn as a styled chip that
+   body text cannot reproduce.
+3. **Line breaks:** `\n` is the only line break. **Every `\r` is escaped, including the one in `\r\n`**,
+   because a CR is part of what runs (`rm -rf build\r` names a different file than `rm -rf build`).
+   With the explicit `lineEndings: 'prose'` option, used only for model-written descriptions and plan
+   text, `\r\n` is read as one line break and counted in `stats.normalizedCrlf`. `\t` becomes a `tab`
+   segment.
 4. **Collapse padding:** a run of more than 8 consecutive `U+0020` becomes one `collapsed spaces`
    segment with the count, and a run of more than 3 consecutive blank lines (empty or spaces only)
    becomes one `collapsed blank_lines` segment on its own line. Runs at or under the limits are
    kept as they are. Nothing is dropped without a marker that states how much.
+   **Combining marks:** a run of more than 3 consecutive nonspacing marks (Mn) that were not
+   otherwise escaped, on one base character, becomes one `collapsed combining_marks` segment with the
+   count, and the base stays. A stacked run (Zalgo text) would otherwise draw ink over the
+   neighbouring lines of the action block. Legitimate text uses at most a few marks per base.
 5. **Bounds:** in `inline` mode, beyond `maxChars` the rest becomes one `omitted` segment with the
    count. In `dialog` mode, beyond `maxChars` the function returns `too_long`; the caller refuses the
    operation, because a native dialog cannot scroll and a truncated dialog hides the tail. `block` mode
@@ -964,7 +981,12 @@ Input shown with escapes; expected `plain` (and flags) on the right.
 | `a͏b` | `a⟦U+034F⟧b` | combining grapheme joiner |
 | `a\tb` | `a⟦TAB⟧b` | |
 | `a\rb` | `a⟦U+000D⟧b` | lone CR |
-| `a\r\nb` | `a\nb` | CRLF normalized |
+| `a\r\nb` | `a⟦U+000D⟧\nb` | CR is part of what runs |
+| `a\r\nb`, `lineEndings: 'prose'` | `a\nb`, `normalizedCrlf: 1` | prose fields only |
+| `a\u20DDb` | `a⟦U+20DD⟧b` | enclosing mark |
+| `e` + 3 × `\u0301` | unchanged | at the limit |
+| `e` + 20 × `\u0301` | `e⟦…20 combining marks…⟧`, `hidden: 20` | Zalgo |
+| `\u301AU+202E\u301B` | `⟦U+301A⟧U+202E⟦U+301B⟧` | bracket look-alikes cannot imitate a marker |
 | `⟦U+202E⟧` (literal text) | `⟦U+27E6⟧U+202E⟦U+27E7⟧` | cannot imitate a marker |
 | `ls` + 5 blank lines + `; curl x` | `ls\n⟦…5 blank lines…⟧\n; curl x` | padding exposed |
 | `ls` + 3 blank lines + `; curl x` | unchanged | at the limit |
@@ -983,8 +1005,8 @@ For arbitrary strings (including lone surrogates and long runs):
 
 - **No silent loss:** the sum of the code points in `text` segments, one per `escape` and `tab`
   segment, and the counts in `collapsed` and `omitted` segments equals the input's code-point count
-  (accounting for CRLF normalization).
-- **Clean output:** no `text` segment contains an always-escaped code point or `⟦`/`⟧`.
+  (with `lineEndings: 'prose'`, plus `normalizedCrlf`).
+- **Clean output:** no `text` segment contains an always-escaped code point, `⟦`/`⟧` or `〚`/`〛`.
 - **Idempotent on its own text:** running the function over the concatenated `text` segments returns
   the same text segments.
 - **Totality and bounds:** it never throws, and runs in time linear in the input (checked on a 1 MiB
