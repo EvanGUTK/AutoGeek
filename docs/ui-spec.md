@@ -531,11 +531,21 @@ with the diff for the selected file.
   says so. The `any` match is
   offered only for `deny` and `ask`. The form states what the contract guarantees: a broad allow
   never silently auto-allows a sensitive or otherwise elevated action; those still ask.
-- **Adding an `allow` rule** calls `permissions.addRule`; main shows its own native confirmation that
-  renders the rule literally (for `argv_prefix`: "Allow any command beginning with: …"; for MCP
-  without `input`: "Allow ⟨server⟩/⟨tool⟩ with ANY input"). The form shows the same wording beforehand
-  so the dialog is no surprise. `user_declined` leaves the list unchanged and is reported neutrally
-  ("Not added"), not as an error. Deny and ask rules are added without a dialog.
+- **Persistent exec rules keep applying.** Every `argv`, `argv_prefix` and `shell` **allow** rule shows
+  the note "This rule keeps applying even if scripts, Makefiles or package.json change", both in the
+  add form and on the rule's row in the list. Persistent exact rules are explicit user choices and are
+  not cleared by the triggers that clear session grants, while an agent write to a file that can change
+  what a command does is elevated so the user sees that diff (`docs/agent-contract.md`; the residual
+  is recorded in SECURITY.md by ag-agent). The note is a constant string from core, so the editor and
+  the native confirmation say the same thing.
+- **Adding an `allow` rule** calls `permissions.addRule`. **Main** shows the native confirmation, builds
+  its text, and renders the rule literally (for `argv_prefix`: "Allow any command beginning with: …";
+  for MCP without `input`: "Allow ⟨server⟩/⟨tool⟩ with ANY input"), ending an `argv`, `argv_prefix` or
+  `shell` rule with the same sentence about scripts, Makefiles and package.json. **The UI never
+  builds, previews or substitutes the confirmation text**: it shows only "Waiting for confirmation in
+  the system dialog" and then the result. The static note above is explanation in the editor, not a
+  copy of the dialog. `user_declined` leaves the list unchanged and is reported neutrally ("Not
+  added"), not as an error. Deny and ask rules are added without a dialog.
 - A prompt never creates a saved rule (§5.4); this editor is the only way.
 
 ### 4.8 Open folder and workspace trust
