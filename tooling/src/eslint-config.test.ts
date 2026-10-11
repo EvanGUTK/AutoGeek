@@ -36,9 +36,9 @@ afterAll(async () => {
 });
 
 /** Lints `source` as a real file in the sandbox project and returns "ruleId: message" strings. */
-async function lint(source: string): Promise<string[]> {
+async function lint(source: string, suffix = '.ts'): Promise<string[]> {
   counter += 1;
-  const filePath = join(sandbox, `sample${String(counter)}.ts`);
+  const filePath = join(sandbox, `sample${String(counter)}${suffix}`);
   await writeFile(filePath, source);
   const [result] = await eslint.lintFiles([filePath]);
   if (result === undefined) {
@@ -111,6 +111,7 @@ describe('eslint policy', () => {
     async (call) => {
       const messages = await lint(
         `declare const it: { skip: (n: string) => void };\ndeclare const test: typeof it;\ndeclare const describe: typeof it;\n${call}('x');\n`,
+        '.test.ts',
       );
       expect(messages.join('\n')).toContain('no-restricted-syntax');
     },
@@ -140,6 +141,7 @@ describe('eslint policy', () => {
         `declare const test: { extend: (o: object) => { skip: (n: string) => void } };\n` +
         `declare const mine: { skipIf: (c: boolean) => (n: string) => void };\n` +
         `declare const ctx: { skip: () => void };\n${call}\n`,
+      '.test.ts',
     );
     expect(messages.join('\n')).toContain('no-restricted-syntax');
   });
