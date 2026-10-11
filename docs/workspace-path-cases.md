@@ -97,7 +97,8 @@ so it is out of scope.
 1. Resolve and contain the path (realpath of the deepest existing ancestor).
 2. Open it: posix uses `O_NOFOLLOW` on the leaf. On win32 `O_NOFOLLOW` is undefined, so the leaf is
    checked with `lstat` first and reparse points (symlinks, junctions) are rejected.
-3. `fstat(fd)` gives `(dev, ino)`. Then `realpath(path)` and `stat` must give the same `(dev, ino)`
+3. `fstat(fd, { bigint: true })` gives `(dev, ino)` as `bigint`s (NTFS file IDs and some inode
+   numbers exceed 2^53, so `number` would collide). An `ino` of `0n` is a mismatch (fail closed). Then `realpath(path)` and `stat` must give the same `(dev, ino)`
    and a realpath still inside `R`. A swap of any intermediate directory to a symlink pointing
    elsewhere makes the second resolution land on a different inode and is rejected.
 4. On Linux the module additionally compares `readlink(/proc/self/fd/N)` with the contained path.
@@ -125,6 +126,7 @@ no-ops and are not reachable from IPC).
 | 5.8 | in `afterMkdir`, the just-created component is swapped for a symlink | create one component at a time with `mkdir` and re-verify containment after each |
 | 5.9 | stress test: a loop thread flips a path between a regular file and a symlink to `outside` while the module reads it 10k times | the outside file's content is never returned |
 | 5.10 | abort during resolution | `AbortSignal` honored; the fd is closed; no leak |
+| 5.11b | `(dev, ino)` comparison | uses `bigint` (test with values above 2^53 that differ only in the low bits), and `ino === 0n` on either side is a mismatch |
 | 5.11 | mechanism per platform | a test asserts which steps ran: the `(dev, ino)` re-check on every platform, `/proc/self/fd` also on Linux, the `lstat` reparse check on win32 |
 
 ## 6. Multiple roots and trust
@@ -215,7 +217,7 @@ anchored.
 | 7a.9b | lockfiles and manifests of installers that run scripts: `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock*`, `Gemfile`, `Gemfile.lock`, `*.gemspec`, `requirements*.txt`, `Pipfile`, `Pipfile.lock`, `poetry.lock`, `uv.lock` | rewriting a resolved tarball URL or integrity makes the next `install` run attacker lifecycle scripts (reviewer W1); an install is an action the user does not read as running project code |
 | 7a.10 | `Dockerfile*`, `docker-compose*.yml`, `compose*.yaml` | build and run commands |
 | 7a.11 | `setup.py`, `pyproject.toml`, `setup.cfg` | executed by installers and build backends (`pip install`, `uv sync`); `conftest.py`, `tox.ini` and `noxfile.py` are not here, see the rule |
-| 7a.12 | `*.sh` with the executable bit set | an executable script is a command waiting to run; write and chmod both |
+| 7a.12 | every `*.sh`, `*.bash`, `*.zsh`, `*.fish`, `*.ps1`, `*.bat`, `*.cmd` file, by PATH only (reviewer N2) | a script is a command waiting to run. The classifier is path-only and cannot see the executable bit, so it elevates every script by name instead of guessing from the mode. `chmod` has no `FsWriteOp` and v1 ships no chmod tool; if one is added it needs its own gate action from ag-agent, and `isExecVector` is still called on its path |
 | 7a.13 | `.claude/**`, `.cursor/**`, `.cursorrules`, `.gemini/**`, `.continue/**`, `.codex/**`, `AGENTS.md`, `AUTOGEEK.md`, `CLAUDE.md`, `.mcp.json`, `.autogeek/mcp*.json` | agent configuration and MCP server definitions spawn processes and widen agent behavior. `AUTOGEEK.md` and `AGENTS.md` are prompt-injection surfaces, so elevated writes, ordinary reads (revises 7.16 for writes) |
 | 7a.14 | `.cargo/config*`, `build.rs`, `rust-toolchain*`, `.bazelrc`, `WORKSPACE`, `BUILD*` | build scripts and runner overrides |
 | 7a.15 | `.gradle/**`, `gradle.properties`, `build.gradle*`, `settings.gradle*`, `pom.xml`, `.mvn/**` | build plugins run code |
