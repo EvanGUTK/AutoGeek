@@ -417,8 +417,8 @@ Data comes from `auth.list` (`CredentialRef`: label, provider, kind), the provid
 - **Composer:** the draft is kept while a run is active. While a run is active in the session,
   Send is replaced by Stop (`agent.send` would return `conflict: run_active`), which also covers a
   pending approval. Mode (`ask`/`plan`/`agent`) and the model selection are chosen per send and
-  shown on the composer. In an untrusted workspace the `agent` mode is unavailable with the reason
-  stated.
+  shown on the composer. In an untrusted folder the composer does not go dark: using it shows the
+  trust prompt (§4.8) with the reason, because `agent.*` needs trust in every mode.
 - **Settings the budgets read from** are user-adjustable; the key and who applies it are an open
   item (`docs/ipc-channels.md` §9).
 
@@ -541,15 +541,37 @@ with the diff for the selected file.
 ### 4.8 Open folder and workspace trust
 
 Opening a folder calls `workspace.openFolder`; main shows the native folder dialog. A new folder is
-untrusted ("Restricted mode"): listing, reading and editing files work (`workspace.listDir`,
-`readFile`, `writeFile`), while git status, the terminal and agent mode are unavailable
-(`untrusted_workspace`), and a
-persistent "Restricted mode" indicator is shown in the status bar, and a panel explains what trust
-enables and what a hostile folder could do. **Trust this folder** calls `workspace.setTrust` with
-`true`; main shows a native confirmation built from its own data (the folder name and path). A
-refusal (`user_declined`) leaves the folder untrusted and is not an error. Revoking trust takes
-effect at once and the session approvals for that root are cleared
-(`docs/agent-contract.md` §2); the UI refreshes from events, not by guessing.
+untrusted ("Restricted mode"). In Restricted mode, listing, reading and editing files work
+(`workspace.listDir`, `readFile`, `writeFile`, with the usual containment and protected-path rules),
+while `git.*`, `terminal.*` and `agent.*` need trust (`untrusted_workspace`). A persistent
+"Restricted mode" indicator in the status bar opens the same trust prompt when activated.
+
+**Features that need trust are never silently disabled.** The controls stay enabled and visible; using
+one (the terminal panel or its shortcut, the source-control view, the agent composer in any mode,
+the command palette entries) shows the **trust prompt** in place of the feature, and moves focus to
+it because the user just asked for something. It is a panel, not an error toast, and it says why for
+that feature:
+
+| Feature | Reason shown |
+|---|---|
+| Terminal | "The terminal runs programs from this folder's environment." |
+| Source control | "A repository's own configuration can make git run programs." |
+| Agent (ask, plan, agent) | "The agent reads files, edits them and runs commands in this folder." |
+
+The prompt also states what trusting enables, that a folder from an untrusted source can contain
+programs and configuration that run when these features are used, and that the user can keep
+editing files without trusting. It has two actions: **Trust this folder…** and **Stay in Restricted
+mode**. Trusting calls `workspace.setTrust` with `true`; **main** then shows a native confirmation
+built from its own data (the folder name and path, display-safe). `user_declined` leaves the folder
+untrusted and is not an error; the UI shows the prompt again only when the user next asks for a
+feature. `too_long` (a path too long for the dialog) is explained in words. Revoking trust takes
+effect at once and the session approvals for that root are cleared (`docs/agent-contract.md` §2);
+the UI refreshes from events, not by guessing.
+
+Tests: each of the three features, invoked by pointer, by keyboard shortcut and from the command
+palette in an untrusted folder, shows its own reason and never an empty or inert control; the file
+tree and editor keep working; declining the native confirmation leaves the folder untrusted; trust
+granted from one entry point enables all three without a reload.
 
 ## 5. Approval-prompt UX
 
