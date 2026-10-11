@@ -1,3 +1,5 @@
+import { truncateUtf8 } from '../text.ts';
+
 /** Mirrors ProviderError.detail's limit in @autogeek/core. */
 export const MAX_DETAIL_BYTES = 2048;
 const MARK = '[REDACTED]';
@@ -33,17 +35,5 @@ export function redactSecrets(text: string, knownSecrets: readonly string[]): st
 
 /** Redacted text truncated to `ProviderError.detail`'s byte limit on a code point boundary. */
 export function toDetail(text: string, knownSecrets: readonly string[]): string {
-  const redacted = redactSecrets(text, knownSecrets);
-  const encoder = new TextEncoder();
-  if (encoder.encode(redacted).length <= MAX_DETAIL_BYTES) return redacted;
-  const budget = MAX_DETAIL_BYTES - encoder.encode(ELLIPSIS).length;
-  let bytes = 0;
-  let out = '';
-  for (const char of redacted) {
-    const size = encoder.encode(char).length;
-    if (bytes + size > budget) break;
-    bytes += size;
-    out += char;
-  }
-  return out + ELLIPSIS;
+  return truncateUtf8(redactSecrets(text, knownSecrets), MAX_DETAIL_BYTES, ELLIPSIS);
 }
