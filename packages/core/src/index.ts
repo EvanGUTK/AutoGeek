@@ -2,6 +2,14 @@ export { abortReason } from './abort.ts';
 export { createEmitter } from './emitter.ts';
 export type { EmitterOptions, ListenOptions, TypedEmitter, Unsubscribe } from './emitter.ts';
 export {
+  IMAGE_MEDIA_TYPES,
+  ImageBlockSchema,
+  ImageMediaTypeSchema,
+  TextBlockSchema,
+  ToolOutputSchema,
+} from './content.ts';
+export type { ImageBlock, ImageMediaType, TextBlock, ToolOutput } from './content.ts';
+export {
   CoreErrorSchema,
   ERROR_CODES,
   ERROR_MESSAGES,
