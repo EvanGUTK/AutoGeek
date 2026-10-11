@@ -28,3 +28,11 @@ export { JSON_MAX_DEPTH, JSON_MAX_NODES, JsonObjectSchema, JsonValueSchema } fro
 export type { JsonObject, JsonValue } from './json.ts';
 export { andThen, err, map, mapErr, ok, unwrapOr } from './result.ts';
 export type { Err, Ok, Result } from './result.ts';
+export {
+  ContentPartSchema,
+  MessageSchema,
+  ProviderMetadataSchema,
+  ROLES,
+  RoleSchema,
+} from './model/message.ts';
+export type { ContentPart, Message, ProviderMetadata, Role } from './model/message.ts';
