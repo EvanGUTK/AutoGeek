@@ -49,3 +49,13 @@ export type {
   ProviderErrorExtras,
   ProviderErrorKind,
 } from './model/provider-error.ts';
+export {
+  ModelEventSchema,
+  ModelUsageSchema,
+  STOP_REASONS,
+  StopReasonSchema,
+  TOOL_CALL_INVALID_REASONS,
+} from './model/event.ts';
+export type { ModelEvent, ModelUsage, StopReason } from './model/event.ts';
+export { checkModelEventOrder } from './model/event-order.ts';
+export type { OrderRule, OrderViolation } from './model/event-order.ts';
