@@ -9,6 +9,12 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 const DryRun = z.object({
   globalCacheInputs: z.object({ files: z.record(z.string(), z.string()) }),
+  tasks: z.array(
+    z.object({
+      taskId: z.string(),
+      resolvedTaskDefinition: z.object({ cache: z.boolean() }),
+    }),
+  ),
 });
 
 async function turbo(args: readonly string[]): Promise<string> {
@@ -32,5 +38,15 @@ describe('turbo cache configuration', () => {
   it('keeps the local cache isolated to this checkout instead of sharing it across worktrees', async () => {
     const text = await turbo(['run', 'typecheck', '--dry']);
     expect(text).not.toContain('shared worktree cache');
+  });
+
+  it('never caches tooling#test: its tests read root files that are not in the turbo hash', async () => {
+    // eslint-cli, workspace-policy, dependency-rules and turbo-config tests read the root
+    // package.json, turbo.json, .dependency-cruiser.mjs and the apps/ and packages/ listings.
+    // A cached green would hide a regression in any of them (review F1, LEARNINGS L-001).
+    const json = await turbo(['run', 'test', '--dry=json']);
+    const dryRun = DryRun.parse(JSON.parse(json.slice(json.indexOf('{'))));
+    const task = dryRun.tasks.find((t) => t.taskId === '@autogeek/tooling#test');
+    expect(task?.resolvedTaskDefinition.cache).toBe(false);
   });
 });
