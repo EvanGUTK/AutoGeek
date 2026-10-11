@@ -103,6 +103,14 @@ export function createDependencyRuleSet(): IFlattenedRuleSet {
         to: { path: '^tooling/', pathNot: TOOLING_VITEST_ENTRY },
       },
       {
+        name: 'nothing-imports-vitest-config',
+        comment:
+          'vitest.config.ts may import tooling, so importing it from anywhere would reach tooling transitively. Nothing may depend on a vitest.config.ts.',
+        severity: 'error',
+        from: {},
+        to: { path: '(^|/)vitest\\.config\\.ts$' },
+      },
+      {
         name: 'public-api-only',
         comment:
           'Import another package only through its public src/index.ts, never its internals.',

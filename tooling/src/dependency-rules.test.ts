@@ -442,3 +442,25 @@ describe('the vitest.config.ts exception for the shared test config', () => {
     expect(names(violations)).toContain('not-to-unresolvable');
   });
 });
+
+describe('nothing may import a vitest.config.ts (it would reach tooling transitively)', () => {
+  const names = (violations: string[]): string[] => violations.map((v) => v.split(':')[0] ?? '');
+
+  it.each([
+    ['product source of the same package', 'packages/auth/src/index.ts', '../vitest.config.ts'],
+    [
+      'product source of another package',
+      'packages/agent/src/index.ts',
+      '../../auth/vitest.config.ts',
+    ],
+    ['another config file', 'packages/agent/vitest.config.ts', '../auth/vitest.config.ts'],
+    ['an app', 'apps/desktop/src/main.ts', '../../../packages/auth/vitest.config.ts'],
+  ])('forbids %s importing it', async (_name, from, specifier) => {
+    const target = join(dirname(from), specifier);
+    const violations = await violationsFor({
+      [from]: importer(specifier),
+      [target]: exported,
+    });
+    expect(names(violations)).toContain('nothing-imports-vitest-config');
+  });
+});
