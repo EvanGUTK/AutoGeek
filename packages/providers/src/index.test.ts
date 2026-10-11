@@ -8,6 +8,7 @@ describe('@autogeek/providers', () => {
       'DEFAULT_TIMEOUTS',
       'NOOP_LOGGER',
       'createAnthropicProvider',
+      'createGeminiProvider',
       'createOpenAIProvider',
       'createTransportDeps',
     ]);
