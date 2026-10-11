@@ -123,6 +123,27 @@ describe('eslint policy', () => {
     expect(messages.join('\n')).toContain('@typescript-eslint/consistent-type-imports');
   });
 
+  it.each([
+    ['a chained modifier', "it.concurrent.skip('x');"],
+    ['a chained only', "describe.concurrent.only('x');"],
+    ['an aliased import', "spec.skip('x');"],
+    ['an extended test', "test.extend({}).skip('x');"],
+    ['a derived test', "mine.skipIf(true)('x');"],
+    ['runIf', "it.runIf(false)('x');"],
+    ['a runtime ctx.skip()', 'ctx.skip();'],
+    ['a computed property', "it['skip']('x');"],
+  ])('rejects skipping through %s', async (_name, call) => {
+    const messages = await lint(
+      `declare const it: { concurrent: { skip: (n: string) => void }; runIf: (c: boolean) => (n: string) => void; skip: (n: string) => void };\n` +
+        `declare const describe: { concurrent: { only: (n: string) => void } };\n` +
+        `declare const spec: { skip: (n: string) => void };\n` +
+        `declare const test: { extend: (o: object) => { skip: (n: string) => void } };\n` +
+        `declare const mine: { skipIf: (c: boolean) => (n: string) => void };\n` +
+        `declare const ctx: { skip: () => void };\n${call}\n`,
+    );
+    expect(messages.join('\n')).toContain('no-restricted-syntax');
+  });
+
   it('rejects empty catch blocks', async () => {
     const messages = await lint(
       'export function f(): void {\n  try {\n    JSON.parse("{");\n  } catch {}\n}\n',
