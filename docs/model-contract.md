@@ -192,7 +192,7 @@ interface ProviderError {
   status?: number;
   requestId?: string;       // vendor request id header, for support
   retryAfterMs?: number;
-  detail?: string;          // redacted, ≤2 KiB vendor body/excerpt; logs/UI only, NEVER sent to the model
+  detail?: string;          // redacted, ≤2 KiB vendor body/excerpt; main-process LOGS ONLY — never sent to the model, never crosses the IPC bridge to the renderer
 }
 ```
 
