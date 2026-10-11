@@ -77,18 +77,28 @@ export function assertTokenEndpoint(endpoint: string): void {
   }
 }
 
-function interpret(status: number, text: string, receivedAt: number): Result<TokenSet, TokenError> {
-  const json: unknown = JSON.parse(text);
-  if (status < 200 || status > 299) {
-    const parsedError = ErrorResponseSchema.safeParse(json);
-    if (!parsedError.success) return err({ kind: 'http_error', status });
+/**
+ * Maps a non-success reply to a typed error. Total: an unparseable body, or any throw while parsing
+ * or validating it, is just `http_error`. Only an RFC 6749 shaped error code is passed on.
+ */
+function errorFromReply(status: number, text: string): TokenError {
+  try {
+    const parsedError = ErrorResponseSchema.safeParse(JSON.parse(text));
+    if (!parsedError.success) return { kind: 'http_error', status };
     const code = parsedError.data.error;
-    return err({
+    return {
       kind: 'oauth_error',
       oauthError: OAUTH_ERROR_PATTERN.test(code) ? code : 'unknown',
       status,
-    });
+    };
+  } catch {
+    return { kind: 'http_error', status };
   }
+}
+
+function interpret(status: number, text: string, receivedAt: number): Result<TokenSet, TokenError> {
+  if (status < 200 || status > 299) return err(errorFromReply(status, text));
+  const json: unknown = JSON.parse(text);
   const parsed = TokenResponseSchema.safeParse(json);
   if (!parsed.success) return err({ kind: 'invalid_response' });
   const { access_token, expires_in, refresh_token, scope } = parsed.data;
@@ -230,4 +240,30 @@ export function refreshTokens(input: RefreshTokensInput): Promise<Result<TokenSe
     signal: input.signal,
     now: input.now,
   });
+}
+
+export interface RevokeTokenInput {
+  readonly revocationEndpoint: string;
+  readonly clientId: string;
+  readonly token: string;
+  readonly tokenTypeHint: 'refresh_token' | 'access_token';
+  readonly fetch: FetchLike;
+  readonly signal: AbortSignal;
+}
+
+/**
+ * Revokes a token (RFC 7009). Only 200 means revoked; per §2.2 that includes a token the server
+ * already considered invalid, and the body is ignored. Anything else is a typed error, so the
+ * caller can tell the user the provider was not informed.
+ */
+export async function revokeToken(input: RevokeTokenInput): Promise<Result<void, TokenError>> {
+  const reply = await postForm(
+    input.revocationEndpoint,
+    { token: input.token, token_type_hint: input.tokenTypeHint, client_id: input.clientId },
+    input.fetch,
+    input.signal,
+  );
+  if (!reply.ok) return reply;
+  if (reply.value.status === 200) return ok(undefined);
+  return err(errorFromReply(reply.value.status, reply.value.text));
 }
