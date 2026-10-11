@@ -417,7 +417,9 @@ alongside.
     - `load(rootKey)` returns `global` followed by `roots[rootKey]`.
   - `describeRuleForConfirm(rule: PolicyRuleInput): string`: the literal rule, plus the exact
     contract phrases "Allow any command beginning with: " (`argv_prefix`, one element per line)
-    and "with ANY input" (`mcp` without `input`).
+    and "with ANY input" (`mcp` without `input`). For `allow` rules of kind `argv`,
+    `argv_prefix` or `shell`, it adds the chief's exact line: "This rule keeps applying even if
+    scripts, Makefiles or package.json change".
 
 - [ ] **Step 1: Write the failing tests.**
   - round trip;
@@ -426,7 +428,9 @@ alongside.
     (raise it with foundation if that's missing);
   - corrupt JSON → `store_corrupt`, and the file is left byte-identical;
   - a concurrent `add` doesn't lose a rule (serialized writes);
-  - confirm-text snapshots for argv_prefix and mcp any-input.
+  - confirm-text snapshots for argv_prefix and mcp any-input;
+  - `command allow rules warn that they survive script changes`: argv, argv_prefix and shell
+    allow rules contain the exact line, while deny/ask rules and path/url/mcp rules don't.
 - [ ] **Steps 2–4**, **Step 5: Commit** `feat(permissions): add userData rule store and confirm text`.
 
 ### Task 8: The gate
@@ -710,4 +714,7 @@ exec / exec_shell:
   - new vector files seen only through delayed events;
   - arbitrary scripts' side effects;
   - the user's own edits during the async window;
-  - Windows shell-string grants being single-use.
+  - Windows shell-string grants being single-use;
+  - **persistent exact command allow rules are never cleared** by any trigger (chief: explicit
+    user choices, bounded because the agent's own writes to exec vectors are elevated). The
+    confirm text and the rule editor say so.
