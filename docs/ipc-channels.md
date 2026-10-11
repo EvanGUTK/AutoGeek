@@ -91,7 +91,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `not_found` | Target does not exist (file, run, terminal, credential, approval) |
 | `outside_workspace` | Resolved path escapes the trusted root(s) |
 | `user_declined` | The user declined a native confirmation dialog shown by main (protected path, trust, saved allow rule) |
-| `protected_path` | Hard-denied access to repository-integrity paths: everything under `.git/` except the confirm allowlist (§3 `workspace.readFile`); no dialog and no override |
+| `protected_path` | Hard-denied **write** to repository-integrity paths: everything under `.git/` except the confirm allowlist (§3 `workspace.readFile`); no dialog and no override |
 | `untrusted_workspace` | Operation needs a trusted workspace |
 | `too_long` | The text main must put in a native confirmation exceeds the dialog bound (`docs/ui-spec.md` §8); the operation is refused, never shown cut |
 | `conflict` | Stale write or run state conflict; `details.kind` says which (`paths_changed`, `run_active`, a disk change) |
@@ -213,7 +213,12 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   have an event like everything else that is state. It is paired with `getState` the same way as the
   other state events: subscribe and buffer, call `getState`, then apply buffered events whose `seq` is
   above `stateSeq`. This also lets a second view stay consistent after the roles are split (D-010).
-  The event is approved by the chief; its exact shape is ag-workspace's to confirm.
+  The event is approved by the chief and its shape is confirmed by ag-workspace. `stateChanged` and
+  `fsWatchState` each keep their own counter (`stateSeq` in `getState` belongs to the first,
+  `watch.seq` to the second), both per process and never reset when the root changes. An event is
+  emitted only on an actual change of root or trust, not when `setTrust` repeats the current value,
+  and a declined `setTrust(true)` (`user_declined`) emits nothing. The store lives in `workspace` and
+  desktop calls it from its `openFolder` and `setTrust` handlers, after the native dialogs.
 
 ### `workspace.setTrust`
 - Input: `{ trusted: boolean }` (applies to the current root, set only from the trust-prompt UI).
@@ -261,20 +266,25 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   path is too long to show in the confirmation dialog, so the read is refused).
 - This is a user-driven editor action; main still enforces containment and the sensitive-path
   rules, split into two classes by ag-workspace:
-  - **Confirmable** (`.env*`, key and credential files, `.git/config`, `.git/hooks`; templates such as
-    `.env.example` are read without a dialog): main shows a **native confirmation dialog** (built by
+  - **Confirmable** (`.env*`, key and credential files; templates such as `.env.example` are read
+    without a dialog; plus the `.git` entries below): main shows a **native confirmation dialog** (built by
     main from the resolved path; the renderer supplies no "confirmed" flag, since a compromised
     renderer could spoof one) and the call resolves only after the user answers. Decline →
     `user_declined`. The call can therefore take arbitrarily long; the editor shows a "waiting for
     confirmation" state and no timeout. Confirmation is per call.
-  - **Hard-denied**: `protected_path`, no dialog and no override, for **everything under `.git/`
-    except the confirm allowlist**, which still gets the native dialog: `.git/config`,
-    `.git/hooks/**`, `.git/info/exclude`, `.git/info/attributes`, a submodule's `modules/*/config` and
-    `modules/*/hooks/**`, and `worktrees/*/config.worktree`. A file named `.git` at any depth (a
-    gitlink containing `gitdir:`) is also confirmable. AutoGeek's own configuration and credential
-    store answer `outside_workspace`, so their existence is not confirmed. The editor explains a
-    `protected_path` result in words and offers no way around it. (ag-workspace,
-    `docs/workspace-path-cases.md` §7; confirmed by the chief.)
+  - **`.git` writes are default-deny**: `protected_path`, no dialog and no override, for
+    **everything under `.git/` except the confirm allowlist**, which still gets the native dialog:
+    `.git/config`, `.git/hooks/**`, `.git/info/exclude`, `.git/info/attributes`, a submodule's
+    `modules/*/config` and `modules/*/hooks/**`, and `worktrees/*/config.worktree`. A file named `.git`
+    at any depth (a gitlink containing `gitdir:`) is confirmable for writes, and ordinary to read.
+  - **`.git` reads** are not default-deny. Reads of `.git/config`, `.git/config.worktree`,
+    `.git/FETCH_HEAD`, `.git/logs/**`, the `modules/*/config` and `worktrees/*/config.worktree`
+    files, and `.git-credentials` are sensitive and show the native dialog, because remote URLs often
+    hold tokens. Other reads under `.git/` (`refs`, `HEAD`, `packed-refs`, ...) are free and show no
+    dialog.
+  - AutoGeek's own configuration and credential store answer `outside_workspace`, so their existence
+    is not confirmed. The editor explains a `protected_path` result in words and offers no way around
+    it. (ag-workspace, `docs/workspace-path-cases.md` §7; confirmed by the chief.)
   Hardening of the dialog and the race between the answer and the I/O is in §9.4.
 
 ### `workspace.writeFile`
