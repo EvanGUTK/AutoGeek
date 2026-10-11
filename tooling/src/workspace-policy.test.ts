@@ -80,6 +80,17 @@ describe('supply-chain settings in pnpm-workspace.yaml', () => {
     expect(await workspaceFile()).not.toMatch(/^minimumReleaseAgeExclude\s*:/m);
   });
 
+  it('pins the cooldown to at least 24 hours (1440 minutes) so it cannot be lowered or zeroed', async () => {
+    const match = /^minimumReleaseAge:\s*(\d+)\s*$/m.exec(await workspaceFile());
+    expect(match, 'minimumReleaseAge must be set explicitly in pnpm-workspace.yaml').not.toBeNull();
+    expect(Number(match?.[1])).toBeGreaterThanOrEqual(1440);
+  });
+
+  it('does not override the cooldown in .npmrc', async () => {
+    const npmrc = await readFile(join(REPO_ROOT, '.npmrc'), 'utf8');
+    expect(npmrc).not.toMatch(/minimum-?release-?age/i);
+  });
+
   it('refuses silent exclusions with minimumReleaseAgeStrict', async () => {
     expect(await workspaceFile()).toMatch(/^minimumReleaseAgeStrict:\s*true\s*$/m);
   });
