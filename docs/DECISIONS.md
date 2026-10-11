@@ -35,20 +35,28 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
 - **Consequences:** see ARCHITECTURE.md §5.
 
 ## D-005 Toolchain pins and repo-policy-as-code in `@autogeek/tooling`
-- **Status:** accepted (ag-foundation, pending chief confirmation)
+- **Status:** accepted (chief, 2026-10-11; proposed by ag-foundation)
 - **Context:** Latest `typescript` is 7.0.x, but `typescript-eslint` 8.71.1 (latest) peers
   `typescript >=4.8.4 <6.1.0`, so type-aware linting does not support 7.x yet. Lint policy and
-  dependency rules are only trustworthy if they are themselves tested.
-- **Decision:** Pin `typescript` 6.0.3 until typescript-eslint supports a newer line, then revisit.
-  All dependency versions are exact and live in the pnpm `catalog:`. The lint policy
-  (`tooling/src/eslint-config.ts`) and the package-boundary matrix (`tooling/src/dependency-rules.ts`)
-  live in a private `@autogeek/tooling` workspace package with tests that run the real ESLint /
-  depcruise against fixture trees. `eslint.config.js` and `.dependency-cruiser.mjs` at the root are
-  thin wrappers. `noInlineConfig` is on, so no file can carry an `eslint-disable`.
-- **Consequences:** `tooling/` is an addition to the §4 layout. Dependency boundaries use
+  dependency rules are only trustworthy if they are themselves tested, through the real command
+  path rather than config-object APIs.
+- **Decision:** Pin `typescript` 6.0.3 until typescript-eslint supports a newer line; no
+  peer-dependency overrides or ignores to force a newer TypeScript. **Revisit** when a
+  typescript-eslint release widens its `typescript` peer range to include the next TypeScript
+  major. Every third-party dependency is declared as `catalog:` in package.json with an exact
+  version in the `pnpm-workspace.yaml` catalog (enforced by `tooling/src/workspace-policy.test.ts`).
+  The lint policy (`tooling/src/eslint-config.ts`), the package-boundary matrix
+  (`tooling/src/dependency-rules.ts`) and the shared Vitest config (`tooling/src/vitest/`) live in a
+  private `@autogeek/tooling` workspace package; `eslint.config.js` and `.dependency-cruiser.mjs`
+  at the root are thin wrappers. `noInlineConfig` is on and ESLint is always run with
+  `--config eslint.config.js`, so no file or nested config can opt out. The pnpm release-age
+  cooldown is enforced with `minimumReleaseAgeStrict: true` and there is no
+  `minimumReleaseAgeExclude`; any exclusion needs its own DECISIONS entry and the chief's approval.
+- **Consequences:** `tooling/` is part of the §4 layout. Dependency boundaries use
   dependency-cruiser (cycles, unresolvable and undeclared imports for free) rather than
   eslint-plugin-boundaries. Turborepo's `agentGuidance` is disabled so it does not write
-  `AGENTS.md`, which §7 reserves for project rules.
+  `AGENTS.md`, which §7 reserves for project rules, and its cache is per checkout with root
+  config files hashed (LEARNINGS L-001).
 
 ## D-006 Permission gate: tools call it, the loop wraps it (proposed by ag-agent)
 - **Status:** accepted (chief, 2026-10-11)
