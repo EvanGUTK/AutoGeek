@@ -16,6 +16,7 @@ export type PackageViolationCode =
   | 'bad-environment'
   | 'wrong-environment'
   | 'environment-mismatch'
+  | 'environment-leak'
   | 'tests-in-product-config'
   | 'test-config-gap'
   | 'weak-compiler-option'
@@ -541,4 +542,79 @@ export async function checkPackage(root: string, dir: string): Promise<PackageVi
     ...(await checkForbiddenFiles(root, dir)),
     ...(await checkSurface(root, dir, manifest)),
   ];
+}
+
+export type LeakKind = 'node' | 'dom';
+
+/** Per package directory: kinds of leak it may have, each with the reason it was reviewed. */
+export type EnvironmentLeakExceptions = Readonly<
+  Record<string, Partial<Readonly<Record<LeakKind, string>>>>
+>;
+
+/**
+ * Explicit, reviewed exceptions. Empty on purpose: adding an entry (a dependency whose typings
+ * legitimately reference Node, say) needs the reason written here and the chief's approval.
+ */
+export const ENVIRONMENT_LEAK_EXCEPTIONS: EnvironmentLeakExceptions = {};
+
+/** Which global typings each environment must NOT resolve into its product program. */
+const FORBIDDEN_LEAKS: Readonly<Record<Environment, readonly LeakKind[]>> = {
+  neutral: ['node', 'dom'],
+  dom: ['node'],
+  node: ['dom'],
+};
+
+const NODE_TYPES = /[\\/]@types[\\/]node[\\/]/;
+const DOM_LIB = /^lib\.dom(\.[a-z]+)*\.d\.ts$/;
+
+function leakOf(file: string): LeakKind | undefined {
+  if (NODE_TYPES.test(file)) {
+    return 'node';
+  }
+  return DOM_LIB.test(basename(file)) ? 'dom' : undefined;
+}
+
+/**
+ * Builds the TypeScript program of the package's PRODUCT tsconfig and checks which global typings
+ * it really resolves, so a leak cannot hide behind a `/// <reference>` directive or a dependency's
+ * .d.ts. This complements the lint ban on directives and the lib/types comparison, and catches
+ * transitive leaks neither can see. It creates a full program, so it is separate from
+ * `checkPackage` (which runs hundreds of times in fixtures) and is called per real package.
+ */
+export async function checkEnvironmentLeaks(
+  root: string,
+  dir: string,
+  exceptions: EnvironmentLeakExceptions = ENVIRONMENT_LEAK_EXCEPTIONS,
+): Promise<PackageViolation[]> {
+  const manifest = await readManifest(root, dir);
+  const environment =
+    manifest === undefined ? undefined : checkEnvironment(dir, manifest).environment;
+  const loaded = loadTsconfig(root, dir, 'tsconfig.json');
+  if (environment === undefined || loaded === undefined) {
+    return []; // checkPackage reports a missing or invalid environment / tsconfig
+  }
+  const program = ts.createProgram({
+    rootNames: loaded.parsed.fileNames,
+    options: loaded.parsed.options,
+  });
+  const forbidden = FORBIDDEN_LEAKS[environment];
+  const violations: PackageViolation[] = [];
+  for (const kind of forbidden) {
+    const reason = exceptions[dir]?.[kind];
+    if (reason !== undefined && reason.length > 0) {
+      continue;
+    }
+    const file = program
+      .getSourceFiles()
+      .map((source) => source.fileName)
+      .find((name) => leakOf(name) === kind);
+    if (file !== undefined) {
+      violations.push({
+        dir,
+        code: 'environment-leak',
+        detail: `${dir} is "${environment}" but its program resolves ${kind} typings (${file})`,
+      });
+    }
+  }
+  return violations;
 }

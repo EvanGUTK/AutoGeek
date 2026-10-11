@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { checkPackage, listWorkspaceDirectories } from './package-policy.ts';
+import { checkEnvironmentLeaks, checkPackage, listWorkspaceDirectories } from './package-policy.ts';
 import type { PackageViolation } from './package-policy.ts';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
@@ -493,6 +493,76 @@ describe('environment enforcement through the real compiler', () => {
     expect((await runTsc(withDom, 'tsconfig.json')).ok).toBe(false);
   });
 
+  describe('leaks into the resolved program (directives and dependency typings)', () => {
+    const leakCodes = async (): Promise<string[]> =>
+      (await checkEnvironmentLeaks(repo, 'packages/probe')).map((v) => v.code);
+    const leakDetail = async (): Promise<string> =>
+      (await checkEnvironmentLeaks(repo, 'packages/probe')).map((v) => v.detail).join('\n');
+
+    it.each(['neutral', 'dom', 'node'] as const)(
+      'finds nothing in a clean %s package',
+      async (env) => {
+        await fixture(env, { 'src/web.ts': web });
+        expect(await checkEnvironmentLeaks(repo, 'packages/probe')).toEqual([]);
+      },
+    );
+
+    it.each(['neutral', 'dom'] as const)(
+      'finds `/// <reference types="node" />` in a %s package',
+      async (env) => {
+        await fixture(env, {
+          'src/leak.ts':
+            '/// <reference types="node" />\nexport const home = process.env["HOME"];\n',
+        });
+        expect(await leakCodes()).toContain('environment-leak');
+        expect(await leakDetail()).toMatch(/node/i);
+      },
+    );
+
+    it.each(['neutral', 'node'] as const)(
+      'finds `/// <reference lib="dom" />` in a %s package',
+      async (env) => {
+        await fixture(env, {
+          'src/leak.ts': '/// <reference lib="dom" />\nexport const title = document.title;\n',
+        });
+        expect(await leakCodes()).toContain('environment-leak');
+        expect(await leakDetail()).toMatch(/dom/i);
+      },
+    );
+
+    it.each(['neutral', 'dom'] as const)(
+      'finds a dependency whose typings reference node, in a %s package',
+      async (env) => {
+        await fixture(env, {
+          'src/uses-dep.ts': "import { leaky } from 'leaky-lib';\nexport const x = leaky;\n",
+          'node_modules/leaky-lib/package.json':
+            '{"name":"leaky-lib","version":"1.0.0","types":"index.d.ts"}',
+          'node_modules/leaky-lib/index.d.ts':
+            '/// <reference types="node" />\nexport declare const leaky: number;\n',
+        });
+        expect(await leakCodes()).toContain('environment-leak');
+      },
+    );
+
+    it('lets a package list an explicit, reasoned exception for one kind of leak', async () => {
+      await fixture('neutral', {
+        'src/uses-dep.ts': "import { leaky } from 'leaky-lib';\nexport const x = leaky;\n",
+        'node_modules/leaky-lib/package.json':
+          '{"name":"leaky-lib","version":"1.0.0","types":"index.d.ts"}',
+        'node_modules/leaky-lib/index.d.ts':
+          '/// <reference types="node" />\nexport declare const leaky: number;\n',
+      });
+      const allowed = {
+        'packages/probe': { node: 'leaky-lib ships node typings; reviewed by the chief' },
+      };
+      expect(await checkEnvironmentLeaks(repo, 'packages/probe', allowed)).toEqual([]);
+      const wrongKind = { 'packages/probe': { dom: 'not the leak that exists' } };
+      expect(
+        (await checkEnvironmentLeaks(repo, 'packages/probe', wrongKind)).map((v) => v.code),
+      ).toContain('environment-leak');
+    });
+  });
+
   it('holds for the real ui-kit package: a stray process.env or node: import fails its typecheck', async () => {
     const probe = join(REPO_ROOT, 'packages', 'ui-kit');
     for (const source of Object.values(stray)) {
@@ -650,5 +720,13 @@ describe('the real workspace', () => {
       await Promise.all(directories.map((dir) => checkPackage(REPO_ROOT, dir)))
     ).flat();
     expect(violations).toEqual([]);
+  });
+
+  it('resolves no Node typings into neutral or dom packages and no DOM lib into neutral or node ones', async () => {
+    const directories = await listWorkspaceDirectories(REPO_ROOT);
+    const leaks = (
+      await Promise.all(directories.map((dir) => checkEnvironmentLeaks(REPO_ROOT, dir)))
+    ).flat();
+    expect(leaks).toEqual([]);
   });
 });
