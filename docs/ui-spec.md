@@ -566,7 +566,9 @@ with the diff for the selected file.
   reactivate them**, and the group says so. **Reactivate…** sends only the chosen ids (1 to 50) to
   `permissions.reactivateRules`; **main** shows a native confirmation listing each valid rule
   literally, and the UI never previews it. The result reports `count` and `dropped`: "N rules could
-  not be reactivated and stay inactive" for invalid ones. `user_declined` leaves everything inactive
+  not be reactivated and stay inactive" for dropped ones, with a constant reason per case (`invalid_rule`:
+  "no longer valid"; `too_long`: "too large to confirm, so it can only be recreated"), and a one-id
+  request is never retried. `user_declined` leaves everything inactive
   and is not an error; `too_long` (the combined confirmation text is too big) asks the user to select
   fewer rules; `too_many` cannot happen because the selection is capped at 50. Global rules are
   unaffected and stay in the normal list.
@@ -617,15 +619,28 @@ is closed:
 from `fsWatchState` only makes the UI call `getState`. The services return `root_unavailable` for
 every operation, so no UI path can use a vanished folder.
 
-**The identity notice** (`notice: 'identity_changed'` in the workspace state) shows once as a banner,
-"This folder looks different from the one you trusted", with the lines "It opened as a new folder, so
-trust must be given again" and "Saved rules for the old folder were made inactive (see Settings)". It
-appears after opening a changed-identity folder, and on the Welcome screen when launch restore
-skipped such a folder (the app then starts with no folder open). It is display-only: trust is the
-state, and trust comes back only through the native confirmation. **Hide** is renderer-local and not
-stored, so a reload shows it again from state; the notice is cleared by `setTrust`, opening a folder or
-closing it, never by reading it. A missing or unreadable folder at launch starts with no folder and
-no notice.
+**The identity notice** (`notice` in the workspace state) is a banner, display-only, and trust is the
+state:
+
+- `kind: 'identity_changed'`: "This folder looks different from the one you trusted", with "It opened
+  as a new folder, so trust must be given again" and "Saved rules for the old folder were made inactive
+  (see Settings)". It appears after opening a changed-identity folder, and on the Welcome screen when
+  launch restore skipped such a folder (the app then starts with no folder open).
+- `kind: 'identity_unavailable'` (FAT, exFAT and similar drives): "Trust isn't remembered on this
+  drive", with "This folder opens in Restricted mode every time you open it". The "looks different"
+  text is never used for it.
+- The folder name, when present, is shown after `displaySafeLiteral` (inline mode) is applied by the
+  renderer to the raw `folderName`, with the spoken form (§8.5) as its accessible name. On the
+  Welcome screen the name tells the user which folder was skipped.
+- **Hide** is renderer-local and not stored, so a reload shows it again from state; the notice is
+  cleared by `setTrust`, opening a folder or closing it, never by reading it. A missing or unreadable
+  folder at launch starts with no folder and no notice.
+
+**Unsaved buffers and a different folder.** When the folder becomes `identity_changed`, open editors
+with unsaved changes are **detached**: each shows "from the previous folder" and offers **Save As**
+only, never a plain Save or the conflict UI's "overwrite", so text from folder A can never be written
+over a file in folder B. Clean editors close or reload from the new folder. For `missing` they stay
+attached, since the same folder may return.
 
 Tests: each of the three features, invoked by pointer, by keyboard shortcut and from the command
 palette in an untrusted folder, shows its own reason and never an empty or inert control; the file
