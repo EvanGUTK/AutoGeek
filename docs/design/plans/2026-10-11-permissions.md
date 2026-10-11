@@ -597,8 +597,11 @@ owner of each run.
     - identity restored (old key again) ⇒ the rules are still inactive until `reactivateRules`
       is confirmed;
     - global rules are unaffected throughout;
-    - no generated sequence of open/quarantine/restore lets a grant or quarantined rule allow
-      anything.
+    - (chief) for EVERY generated interleaving of open, identity mismatch, identity restore
+      and persist failure (injected at any write), no quarantined rule and no stale grant
+      allows anything until a confirmed `reactivateRules`. The model under test is the real
+      `createJsonFileRuleStore` on a temp file, plus the real gate with a scripted trust-store
+      sequence.
   - `nothing is allowed without an affirmative allow`: every `allow` has via `rule`,
     `session_grant`, `baseline` or `user_once`/`user_session`, and an audit entry.
   - `index exports only the public surface`: an `Object.keys(await import('./index'))` snapshot.
