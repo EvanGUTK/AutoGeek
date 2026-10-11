@@ -51,6 +51,13 @@ export interface ConformanceSpec {
   /** A vendor error body for an HTTP status. */
   readonly errorBody: (status: number) => string;
   readonly replay: ReplaySpec;
+  /**
+   * Canned answers for metadata endpoints an adapter calls before streaming (Ollama `/api/show`);
+   * every other path gets the scenario's response.
+   */
+  readonly auxiliary?: (
+    path: string,
+  ) => { readonly status: number; readonly body: string } | undefined;
 }
 
 /** How the adapter replays reasoning from history (its documented origin-matching rule). */
@@ -80,7 +87,13 @@ export function defineConformanceSuite(spec: ConformanceSpec): void {
     });
 
     async function serve(write: (res: ServerResponse, socket: Socket) => void) {
-      server = await startFakeServer((_req, res, socket) => {
+      server = await startFakeServer((req, res, socket) => {
+        const canned = spec.auxiliary?.(req.path);
+        if (canned !== undefined) {
+          res.writeHead(canned.status, { 'content-type': 'application/json' });
+          res.end(canned.body);
+          return;
+        }
         write(res, socket);
       });
       const { deps } = testDeps({

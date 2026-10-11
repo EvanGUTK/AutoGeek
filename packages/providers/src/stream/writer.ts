@@ -54,6 +54,8 @@ export interface EventWriter {
   fail(error: ProviderError): ModelEvent[];
   /** A terminal event was emitted. */
   readonly finished: boolean;
+  /** The part currently open, if any. */
+  readonly openPart: 'text' | 'reasoning' | undefined;
   /** Some event reached the consumer, so the request must not be retried. */
   readonly started: boolean;
 }
@@ -115,6 +117,9 @@ export function createEventWriter(): EventWriter {
     },
     get started() {
       return started;
+    },
+    get openPart() {
+      return open?.kind;
     },
     textDelta(text) {
       if (finished || text === '') return [];

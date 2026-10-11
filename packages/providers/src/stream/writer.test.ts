@@ -265,4 +265,15 @@ describe('createEventWriter: usage and terminals', () => {
     writer.textDelta('a');
     expect(writer.started).toBe(true);
   });
+
+  it('reports the open part', () => {
+    const writer = createEventWriter();
+    expect(writer.openPart).toBeUndefined();
+    writer.reasoningDelta('r');
+    expect(writer.openPart).toBe('reasoning');
+    writer.textDelta('t');
+    expect(writer.openPart).toBe('text');
+    writer.textDone();
+    expect(writer.openPart).toBeUndefined();
+  });
 });

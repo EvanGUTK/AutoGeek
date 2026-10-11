@@ -1,0 +1,7 @@
+{"model":"qwen3:8b","created_at":"2026-10-11T12:00:00Z","message":{"role":"assistant","content":"","thinking":"The user"},"done":false}
+{"model":"qwen3:8b","created_at":"2026-10-11T12:00:00Z","message":{"role":"assistant","content":"","thinking":" asks."},"done":false}
+{"model":"qwen3:8b","created_at":"2026-10-11T12:00:00Z","message":{"role":"assistant","content":"The"},"done":false}
+{"model":"qwen3:8b","created_at":"2026-10-11T12:00:00Z","message":{"role":"assistant","content":" answer"},"done":false}
+{"model":"qwen3:8b","created_at":"2026-10-11T12:00:00Z","message":{"role":"assistant","content":" is"},"done":false}
+{"model":"qwen3:8b","created_at":"2026-10-11T12:00:00Z","message":{"role":"assistant","content":" 42."},"done":false}
+{"model":"qwen3:8b","created_at":"2026-10-11T12:00:01Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":1,"load_duration":1,"prompt_eval_count":169,"prompt_eval_cached_count":128,"prompt_eval_duration":1,"eval_count":15,"eval_duration":1}
