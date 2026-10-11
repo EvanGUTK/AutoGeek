@@ -463,7 +463,7 @@ not toasts.
 | `budget` | "Stopped: step / token / time / spend budget reached", with the limit. Send a message to continue, or change the budget in Settings |
 | `max_tokens` | "The model reached its output limit mid-answer" |
 | `refusal` | "The model declined to continue" |
-| `provider_error` | Exhaustive `ProviderErrorKind` table (auth, quota, rate limit, network, and so on) with a safe constant text and, for retryable kinds, "Try again" that refills the composer and does not auto-send. Never vendor text |
+| `provider_error` | Exhaustive `ProviderErrorKind` table (auth, quota, rate limit, network, and so on) with a safe constant text. When `retryable` is true, "Try again" refills the composer and does not auto-send; `retryAfterMs` is shown as a wait hint. `requestId`, if present, is shown as a copyable "Support reference". Never vendor text |
 | `loop_detected` | "Stopped: the agent kept repeating a call to `<tool>`" (tool name inert) |
 | `invalid_tool_calls` | "Stopped: the model kept sending malformed tool calls" |
 | `checkpoint_failed` | "File edits were refused because they could not be made undoable" |
@@ -501,8 +501,8 @@ run made no writes (`agent.undoRun` returns `not_found`).
    conversation is cut at that message, and that this cannot be redone from AutoGeek yet.
 5. `conflict: run_active` disables the action with the reason "A run is active".
 6. On success the transcript is cut at that message locally, and the undone runs are hidden by the
-   `undone` flag on `agent.listRuns`, so a reload does not bring them back (pending contract
-   amendment, `docs/ipc-channels.md` §5.3).
+   `undone` flag on `agent.listRuns`, so a reload does not bring them back
+   (`docs/agent-contract.md` §11).
 
 "Review changes" for a run uses `agent.getRunDiff`: a virtualized file list (operation including
 `rename` with `from`; binary files labeled "Binary file"; `diffOmitted` shows path and size only)
@@ -529,13 +529,15 @@ with the diff for the selected file.
 ### 4.8 Open folder and workspace trust
 
 Opening a folder calls `workspace.openFolder`; main shows the native folder dialog. A new folder is
-untrusted: the editor and file tree work, while the terminal and agent mode are unavailable, a
+untrusted ("Restricted mode"): listing, reading and editing files work (`workspace.listDir`,
+`readFile`, `writeFile`), while git status, the terminal and agent mode are unavailable
+(`untrusted_workspace`), and a
 persistent "Restricted mode" indicator is shown in the status bar, and a panel explains what trust
 enables and what a hostile folder could do. **Trust this folder** calls `workspace.setTrust` with
 `true`; main shows a native confirmation built from its own data (the folder name and path). A
 refusal (`user_declined`) leaves the folder untrusted and is not an error. Revoking trust takes
-effect at once and main drops the session approvals for that root; the UI refreshes from events,
-not by guessing.
+effect at once and the session approvals for that root are cleared
+(`docs/agent-contract.md` §2); the UI refreshes from events, not by guessing.
 
 ## 5. Approval-prompt UX
 
@@ -573,9 +575,9 @@ A prompt is one card (the **approval dock**, §5.5) containing, top to bottom:
    own label, as text through the display-safe function below:
    - **`exec_shell`:** the exact command string and cwd, plus env overrides. Labeled "Shell command".
      Each env entry is shown as `KEY=value`; a redacted value is shown as `KEY=⟦redacted⟧` with a
-     chip "Some values are hidden", because the user is approving something they cannot see. Any
-     redaction makes the action elevated, so no `session` option is offered (pending contract
-     amendment, `docs/ipc-channels.md` §5.3).
+     chip "Some values are hidden", because the user is approving something they cannot see. A
+     redacted value, or an env key outside the benign allowlist, makes the action elevated, so no
+     `session` option is offered (`docs/agent-contract.md` §2).
    - **`exec`:** the argv list, one element per line with its index and visible quotes (`[0] "npm"`,
      `[1] "test"`, an empty element as `""`), so a space inside an element is not read as two
      arguments; cwd; the class as a chip; env. Labeled "Program and arguments". The two forms are
@@ -689,7 +691,8 @@ for some actions it is wider than "the thing you just saw":
   `ARCHITECTURE.md` §8.4's "unless the user pinned an exact rule" lives. The prompt never writes
   rules.
 - Whether a session option is offered is main's decision and the UI never infers it. Elevated
-  actions (sensitive paths, omitted diffs, destructive or network `exec`, `network`) never offer it.
+  actions (sensitive paths, omitted diffs, destructive or network `exec`, `network`, redacted or non-benign
+  env) never offer it.
   A session grant is revocable from the "Session approvals" list (§4.7).
 - Explicitly absent: allow-all, allow for tool, allow for workspace, allow in this folder, allow
   matching, "remember my choice", and any toggle that changes the policy from inside a prompt.
