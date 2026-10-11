@@ -45,6 +45,12 @@ owner still confirms or amends the exact shapes of their own group.
   text stays in main's logs.
 - Untrusted strings that reach a human (including native dialogs built in main) go through one
   display-safe function from `core` (`docs/ui-spec.md` §5.2).
+- **State-bearing events carry a sequence.** An event that reports state a renderer also reads with
+  a getter carries a monotonically increasing `seq` (or `rev`), and the getter returns the current
+  value. A mount subscribes and buffers, reads the getter, then applies buffered events above that
+  value. Examples: `agent.event` with `agent.replay`, `workspace.fsWatchState` with
+  `workspace.getState`, `settings.changed` with `settings.get`. Main never needs to know who
+  subscribes.
 - Cancellation: long operations are cancelled by an explicit channel keyed by an id (`agent.stop`,
   `terminal.kill`), not by dropping the promise.
 
@@ -155,7 +161,8 @@ names the root. Adding a key is a change to this table, reviewed like any contra
 
 ### `settings.get`
 - Input: `{ keys?: SettingKey[] }` (omitted = all).
-- Output: `{ values: Partial<Settings>; reset: SettingKey[] }`. `reset` lists keys whose stored value
+- Output: `{ values: Partial<Settings>; reset: SettingKey[]; rev: number }` (`rev` is the revision of
+  the latest `settings.changed` reflected in `values`). `reset` lists keys whose stored value
   failed validation and were replaced by defaults, so the UI can show a one-time notice. Reading
   never fails because of a corrupt file.
 - Errors: `unknown_key`.
@@ -168,8 +175,9 @@ names the root. Adding a key is a change to this table, reviewed like any contra
 - The renderer debounces `layout` writes and does not write during a drag.
 
 ### Event `settings.changed`
-- Payload: `{ key: SettingKey; value: SettingValue }`. Emitted after any successful `settings.set`
-  (including from another window), so state converges without polling.
+- Payload: `{ rev: number; key: SettingKey; value: SettingValue }`. Emitted after any successful
+  `settings.set` (including from another window), so state converges without polling. A mount applies
+  buffered events whose `rev` is above the `rev` returned by `settings.get`.
 
 ## 3. `workspace.*` and `git.*` (owner: ag-workspace)
 
@@ -189,7 +197,10 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 - Errors: none beyond universal. New roots start untrusted until `workspace.setTrust`.
 
 ### `workspace.getState`
-- Input: `{}`. Output: `{ root: { name: string; trusted: boolean } | null }`.
+- Input: `{}`. Output: `{ root: { name: string; trusted: boolean } | null; watch: WatchState }` where
+  `WatchState = { seq: number } & ({ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' })`.
+  `seq` is the sequence of the latest `workspace.fsWatchState` event reflected in `watch`; main reads
+  the state and its `seq` atomically (ag-workspace to confirm).
 
 ### `workspace.setTrust`
 - Input: `{ trusted: boolean }` (applies to the current root, set only from the trust-prompt UI).
@@ -265,7 +276,8 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   `node_modules`). Watcher health is reported by the event below.
 
 ### Event `workspace.fsWatchState`
-- Payload: `{ state: 'ok' }` or `{ state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' }`.
+- Payload: `WatchState` as above: `{ seq: number; state: 'ok' }` or
+  `{ seq: number; state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' }`.
   The `reason` enum is closed and exactly these four values; the payload has no paths and no message
   strings. Approved by the chief.
   - `ignore_rules_limit`: the ignore caps tripped, so the fixed excludes apply.
@@ -273,10 +285,15 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   - `overflow`: an event storm such as a large checkout. The renderer gets one rescan batch, and
     `ok` follows after the rescan.
   - `watch_error`: the root was removed or permission was lost.
-- It is sent on every transition, **and once, first, to every new subscription**, so a reloaded
-  renderer re-syncs without asking. Transitions are debounced, so a flapping watcher sends at most
-  one event per window. `workspace.fsChanged` keeps its shape and batches keep arriving while
-  degraded.
+- `seq` increases by one per emitted event, per window. It is sent on every (debounced) transition.
+  Debouncing is on the **trailing edge**, so a flapping watcher ends on its latest state and sends at
+  most one event per window.
+- **Sync, not "first message on subscribe".** `Bridge.subscribe` is renderer-local and main never
+  learns about subscribers, so main cannot send state to a new one. The renderer follows the same
+  pattern as agent events: subscribe and **buffer**, call `workspace.getState`, apply its `watch`,
+  then drain buffered events whose `seq` is above `watch.seq`. A reloaded renderer therefore re-syncs
+  with no extra message.
+- `workspace.fsChanged` keeps its shape and batches keep arriving while degraded.
 - The UI shows "File watching is limited in this folder" for all four reasons and clears it on `ok`.
   `watch_error` also tells the user the folder may have been removed or become unreadable.
 
