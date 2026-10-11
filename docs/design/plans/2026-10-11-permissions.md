@@ -53,10 +53,10 @@ The contract wins on any difference.
   - `argv` / `argv_prefix` / `shell` rules never match a request with a non-empty `env`;
   - session-grant keys include `class` and canonical `env`;
   - grants are per root and cleared on root change and on `setTrust(false)`.
-- **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through a core
-  port, `EnvKeyClassifier { isBenign(key: string): boolean }`, injected. If core doesn't have
-  the port when this slice starts, ask the chief and foundation to add it; don't define it
-  locally. The classifier is never optional: no classifier, no gate.
+- **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through the core
+  port `EnvKeyClassifier`, which ag-agent defines in core in Task 0. The chief granted edit
+  rights to that one file plus its one registration line. The classifier is never optional:
+  no classifier, no gate, enforced at both type level and runtime.
 - `offered` always includes `'deny'` and is exactly what main accepts:
   - in-root actions: `['deny','once']`, plus `'session'` iff not elevated;
   - outside root: policy deny, no prompt.
@@ -87,6 +87,43 @@ The contract wins on any difference.
    - (Task 6 test `audit entry redacts secrets and drops diff content`.)
 
 ---
+
+### Task 0: `EnvKeyClassifier` port in core (chief-granted file)
+
+**Files:**
+- Create: `packages/core/src/ports/env-key-classifier.ts`, or the equivalent location in
+  foundation's layout. It must be its own file.
+- Test: `packages/core/src/ports/env-key-classifier.test.ts`
+- Modify: core's `src/index.ts`, **one export line only**.
+
+Nothing else in core is touched.
+
+**Interfaces:**
+- Produces:
+  - `interface EnvKeyClassifier { isBenign(key: string): boolean }`. The doc comment states the
+    semantics:
+    - allowlist-only and fail closed: unknown ⇒ not benign;
+    - case-sensitive exact match, never normalized in the permissive direction.
+  - `isWellFormedEnvKey(key: string): boolean`: false for empty keys, keys longer than 256
+    chars, and keys containing NUL or `=`.
+  - `createAllowlistEnvKeyClassifier(allowlist: readonly string[]): EnvKeyClassifier`. It
+    throws a `TypeError` (programmer error) if any allowlist entry is malformed or is
+    `__proto__` / `constructor` / `toString` / any `Object.prototype` key. Lookups use a `Set`
+    (never an object index). A malformed or prototype key is never benign, even if allowlisted.
+
+  ag-workspace implements the port by calling this factory with its reviewed allowlist, so the
+  invariants live in tested core code, not in each implementation.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `CI` benign and `ci` not, when only `CI` is allowlisted;
+  - unknown → false;
+  - `''`, `'A'.repeat(257)`, `'A\0B'`, `'A=B'` → false, and they throw if allowlisted;
+  - `'__proto__'`, `'constructor'`, `'toString'`, `'hasOwnProperty'` → false, and they throw if
+    allowlisted;
+  - fast-check: for any string `k` not in the allowlist, `isBenign(k) === false`.
+- [ ] **Steps 2–4:** run → FAIL, implement, run → PASS.
+- [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`. The body
+  cites the chief's grant (edit rights to this file only) and L-005.
 
 ### Task 1: Package scaffold and pure helpers
 
@@ -341,6 +378,10 @@ alongside.
   - `interface DetailedDecision { decision: PermissionDecision; via: DecisionVia; ruleId?: string }`
   - `interface DetailedPermissionGate { checkDetailed(req: PermissionRequest, signal: AbortSignal): Promise<DetailedDecision> }`
   - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; env: EnvKeyClassifier; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
+
+`createPermissionGate` throws a `TypeError` when `deps.env?.isBenign` isn't a function. That's
+the runtime half; the required property is the type-level half. Test:
+`gate refuses to construct without a classifier`.
 
 Algorithm: design §2 steps 1–9. `approvalId = req.provenance.checkId`. The approver is raced
 against `signal`. The audit `literal` is `redactSecrets(renderLiteral(action))`. An approver that rejects or returns a value outside `offered` → deny `user` /
