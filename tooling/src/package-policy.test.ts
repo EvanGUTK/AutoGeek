@@ -680,6 +680,54 @@ describe('vitest configuration', () => {
   );
 });
 
+describe('config files that vitest could pick up instead (defence in depth)', () => {
+  it.each([
+    'vite.config.ts',
+    'vite.config.mts',
+    'vite.config.js',
+    'vitest.config.mts',
+    'vitest.config.cts',
+    'vitest.config.js',
+    'vitest.config.mjs',
+    'vitest.config.cjs',
+  ])('forbids %s next to vitest.config.ts', async (file) => {
+    expect(codes(await check({ [file]: 'export default {};\n' }))).toContain(
+      'forbidden-config-file',
+    );
+  });
+});
+
+describe('test files outside src/', () => {
+  it('requires tsconfig.test.json to cover a test file anywhere in the package', async () => {
+    const result = await check({
+      'test/extra.test.ts': "import { it } from 'vitest';\nit('x', () => undefined);\n",
+    });
+    expect(codes(result)).toContain('test-config-gap');
+    expect(result.map((v) => v.detail).join('\n')).toContain('test/extra.test.ts');
+  });
+
+  it('keeps such a test out of the product tsconfig as well', async () => {
+    const tsconfig = JSON.stringify({
+      extends: '../../tsconfig.base.json',
+      compilerOptions: { lib: ['ES2023'], types: ['node'] },
+      include: ['src', 'test'],
+    });
+    const result = await check({
+      'tsconfig.json': tsconfig,
+      'test/extra.test.ts': "import { it } from 'vitest';\nit('x', () => undefined);\n",
+    });
+    expect(codes(result)).toContain('tests-in-product-config');
+  });
+
+  it('ignores test files inside node_modules and build output', async () => {
+    const result = await check({
+      'node_modules/dep/dep.test.ts': 'export {};\n',
+      'dist/old.test.ts': 'export {};\n',
+    });
+    expect(codes(result)).not.toContain('test-config-gap');
+  });
+});
+
 describe('other opt-out files', () => {
   it.each(['eslint.config.js', 'eslint.config.mjs', 'eslint.config.ts', '.eslintrc.json'])(
     'forbids a package-level %s',

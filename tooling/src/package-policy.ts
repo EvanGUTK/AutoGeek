@@ -115,6 +115,11 @@ const PRODUCT_ENVIRONMENT: Readonly<Record<Environment, CompilerExpectation>> = 
 const TYPECHECK_SCRIPT = 'tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json';
 
 const FORBIDDEN_FILES = /^(vitest\.(workspace|projects)\..+|eslint\.config\..+|\.eslintrc.*)$/;
+/**
+ * Other config files vitest could pick up instead of vitest.config.ts. Forbidden in packages and
+ * tooling; an app may need its own vite.config.ts for its renderer build.
+ */
+const FORBIDDEN_TEST_RUNNER_FILES = /^(vite\.config\..+|vitest\.config\.(?!ts$).+)$/;
 
 async function exists(path: string): Promise<boolean> {
   return access(path).then(
@@ -291,11 +296,15 @@ function checkProductTsconfig(
   return { violations, options };
 }
 
+const SKIPPED_DIRECTORIES = new Set(['node_modules', 'dist', 'out', 'coverage', '.turbo']);
+
+/** Every test file anywhere in the package (not only src/), matching vitest's default include. */
 async function listTestFiles(root: string, dir: string): Promise<string[]> {
-  const entries = await readdir(join(root, dir, 'src'), { recursive: true });
+  const entries = await readdir(join(root, dir), { recursive: true });
   return entries
-    .filter((entry) => /\.(test|spec)\.[cm]?tsx?$/.test(entry))
-    .map((entry) => resolve(root, dir, 'src', entry));
+    .filter((entry) => !entry.split(/[\\/]/).some((part) => SKIPPED_DIRECTORIES.has(part)))
+    .filter((entry) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(entry))
+    .map((entry) => resolve(root, dir, entry));
 }
 
 async function checkTestTsconfig(
@@ -483,8 +492,11 @@ async function checkVitest(root: string, dir: string): Promise<PackageViolation[
 
 async function checkForbiddenFiles(root: string, dir: string): Promise<PackageViolation[]> {
   const entries = await readdir(join(root, dir));
+  const isApp = dir.startsWith('apps/');
   return entries
-    .filter((name) => FORBIDDEN_FILES.test(name))
+    .filter(
+      (name) => FORBIDDEN_FILES.test(name) || (!isApp && FORBIDDEN_TEST_RUNNER_FILES.test(name)),
+    )
     .map((name) => ({
       dir,
       code: 'forbidden-config-file',
