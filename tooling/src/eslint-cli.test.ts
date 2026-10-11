@@ -222,3 +222,21 @@ describe('packages with a product tsconfig and a separate test tsconfig (real CL
     expect(outcome.output).toContain('@typescript-eslint/no-explicit-any');
   });
 });
+
+describe('triple-slash directives cannot change a package environment (real CLI)', () => {
+  it.each([
+    ['types="node"', '/// <reference types="node" />\nexport const home = process.env["HOME"];\n'],
+    ['lib="dom"', '/// <reference lib="dom" />\nexport const title = document.title;\n'],
+    ['lib="webworker"', '/// <reference lib="webworker" />\nexport const v = 1;\n'],
+    ['path=...', '/// <reference path="./extra.d.ts" />\nexport const v = 1;\n'],
+  ])('rejects /// <reference %s />', async (_name, source) => {
+    const outcome = await lintFile(source);
+    expect(outcome.exitCode).not.toBe(0);
+    expect(outcome.output).toContain('@typescript-eslint/triple-slash-reference');
+  });
+
+  it('does not flag an ordinary comment that starts with three slashes', async () => {
+    const outcome = await lintFile('/// A documentation comment.\nexport const v = 1;\n');
+    expect(outcome.output).not.toContain('triple-slash-reference');
+  });
+});

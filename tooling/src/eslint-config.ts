@@ -80,6 +80,13 @@ export function createEslintConfig(options: EslintConfigOptions): Linter.Config[
         'no-empty': ['error', { allowEmptyCatch: false }],
         eqeqeq: ['error', 'always'],
         '@typescript-eslint/consistent-type-imports': 'error',
+        // A triple-slash directive can pull Node or DOM typings into a package whose tsconfig
+        // excludes them (`/// <reference types="node" />`), defeating the runtime-environment
+        // boundary. strictTypeChecked still allows `lib` and `types`.
+        '@typescript-eslint/triple-slash-reference': [
+          'error',
+          { lib: 'never', path: 'never', types: 'never' },
+        ],
         // strictTypeChecked still allows @ts-expect-error with a 10+ character description.
         // AGENT-PROTOCOL §1 bans it outright.
         '@typescript-eslint/ban-ts-comment': [
