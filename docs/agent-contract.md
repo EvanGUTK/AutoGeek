@@ -18,6 +18,8 @@ type Risk = 'read' | 'write' | 'exec' | 'network';
 type ExecClass = 'safe' | 'destructive' | 'network' | 'unknown';
 type FsWriteOp = 'create' | 'modify' | 'delete' | 'rename';
 interface DiffOmitted { bytes: number; added: number; removed: number }   // non-negative ints
+// [chief] Redaction is structural, never a magic string. A redacted value is one the user cannot see.
+type EnvValue = { kind: 'plain'; value: string } | { kind: 'redacted' };
 
 type PermissionAction =
   | { kind: 'fs_read';
@@ -38,11 +40,11 @@ type PermissionAction =
       argv: string[];                     // 1..256 elements, each ≤ 32 KiB
       cwd: string;
       class: ExecClass;
-      env?: Record<string, string> }      // overrides actually applied; secret-shaped values redacted by the tool
+      env?: Record<string, EnvValue> }    // [chief] overrides actually applied; redaction is structural (see below)
   | { kind: 'exec_shell';                 // a shell string; no class field (always treated as 'unknown')
       command: string;                    // ≤ 32 KiB
       cwd: string;
-      env?: Record<string, string> }
+      env?: Record<string, EnvValue> }
   | { kind: 'network'; method: string; url: string }   // url: http(s) only, normalized by the tool, ≤ 8 KiB
   | { kind: 'mcp'; server: string; tool: string;
       input: JsonObject };                // ≤ 64 KiB serialized
@@ -90,6 +92,10 @@ An action is **elevated** if any of these holds:
 - `fs_read` / `fs_write` with `sensitive: true`
 - `fs_write` with `diffOmitted` (the user could not see the write)
 - `exec` with class `destructive` or `network`
+- `exec` / `exec_shell` with ANY redacted env value [chief] (the user cannot see what is applied)
+- `exec` / `exec_shell` with any env key outside the benign allowlist [chief] (fail closed; the allowlist,
+  e.g. `CI`, `NODE_ENV`, `FORCE_COLOR`, is owned by ag-workspace's classifier and reviewed by ag-reviewer;
+  keys such as `NODE_OPTIONS`, `LD_*`, `DYLD_*`, `PATH`, `GIT_*`, `BASH_ENV`, `PYTHONPATH` are never benign)
 - `network`
 
 `offered` **always contains `'deny'` and is exactly the set main accepts**. A
@@ -104,10 +110,12 @@ pending.
 A **session grant** is an in-memory rule that matches **exactly** the approved action:
 - fs_read: tool + path
 - fs_write: tool + op + path + to
-- exec: argv (element-wise) + cwd
-- exec_shell: command + cwd
+- exec: argv (element-wise) + cwd + class + canonical env [chief] (a grant never matches a different env)
+- exec_shell: command + cwd + canonical env [chief]
 - mcp: server + tool + canonical-JSON-equal input
 
+Grants are keyed by the root realpath and cleared on root change and on `setTrust(false)` [chief]
+(desktop calls `grants.clear(rootKey)`).
 The gate builds it from the request; nothing else can build one. The approver can only return an
 `ApprovalOption`. Its lifetime is the app session, per root. It can be revoked via
 `permissions.revokeSessionApproval`.
@@ -153,6 +161,10 @@ so everything asks. A lost deny rule must never turn into an allow.
 
 `exec_shell` is never matched by `argv`/`argv_prefix` rules, and `exec` is never matched by
 `shell` rules.
+
+**[chief] Env:** `argv`, `argv_prefix` and `shell` rules NEVER match a request with a non-empty env.
+Rules carry no env in v1, so any env override asks (an exact `npm test` rule must not also approve
+`NODE_OPTIONS=--require ./x.js npm test`).
 
 An `mcp` allow rule with `input` absent allows ANY input for that tool [chief]; its native confirm
 says literally "Allow ⟨server⟩/⟨tool⟩ with ANY input". (`mcp` is not in the elevated set, so such a
@@ -342,7 +354,7 @@ sessions and runs; anything else is `not_found`.
 |---|---|---|---|
 | `agent.send` | `{ sessionId: string \| null; mode: AgentMode; text: string (1..100_000); selection: { credentialId; modelId } }` | `{ sessionId; runId }` | `untrusted_workspace`, `not_found` (credential/model/session), `conflict` `{ kind: 'run_active' }` (a run, and therefore any pending approval, is active in the session) |
 | `agent.stop` | `{ runId }` | `{}` | `not_found`. Idempotent: a finished run returns `{}` |
-| `agent.listRuns` | `{}` | `{ runs: Array<{ runId; sessionId; mode; state: 'running' \| 'awaiting_approval' \| 'finished'; lastSeq: number }> }` | none. Covers this window's active runs plus finished runs still in the replay buffer |
+| `agent.listRuns` | `{}` | `{ runs: Array<{ runId; sessionId; mode; state: 'running' \| 'awaiting_approval' \| 'finished'; firstSeq: number; lastSeq: number; undone: boolean }> }` | none. Covers this window's active runs plus finished runs still in the replay buffer |
 | `agent.replay` | `{ runId; fromSeq: number }` | `{ kind: 'events'; events: AgentEventEnvelope[]; more: boolean } \| { kind: 'gap' }` | `not_found`. At most 500 events AND at most 8 MiB per response [chief] (`more` = call again from the last seq + 1). `gap` = `fromSeq` was evicted |
 | `agent.undoRun` | `{ runId; dryRun?: boolean; force?: boolean }` | `{ dryRun: true; restores: string[]; laterRuns: string[]; conflicts: string[] } \| { dryRun: false; restored: string[] }` | `not_found` (unknown run / run made no writes), `conflict` `{ kind: 'run_active' } \| { kind: 'paths_changed'; paths: string[] }` |
 | `agent.getRunDiff` | `{ runId }` | `{ files: Array<{ path: string; from?: string; operation: 'create' \| 'modify' \| 'delete' \| 'rename'; binary: boolean; diff?: string; diffOmitted?: DiffOmitted }> }` | `not_found` |
@@ -473,3 +485,17 @@ cached tokens inside the input count), so each adapter normalizes and a conforma
   `ProviderError` field: adapters cannot reliably recognize edited-history 400s, a hint would
   depend on fragile vendor error-text matching, and a retry that fails for an unrelated reason just
   surfaces that second error. Revisit if adapters gain a reliable signal.
+
+## 11. Further chief amendments (2026-10-11, on ag-agent's request)
+
+- **Env (security).** Env is part of what runs. Session grants include canonical env and class in their
+  key; policy rules never match a non-empty env; redaction is structural (`EnvValue`), a redacted value or
+  a non-allowlisted key makes the action elevated; grants are cleared on root change and `setTrust(false)`.
+- **`agent.listRuns`** entries carry `firstSeq` (oldest retained event) and `undone`. `undoRun` marks the
+  undone runs; `agent.replay` still returns their events so history stays auditable, and the UI hides
+  them via the flag.
+- **Display-safe text.** core exports the display-safe function (specified in ui-spec, implemented by
+  ag-foundation); main uses it for EVERY native-dialog text, including the `addRule` confirm.
+- **Budgets** come from the `agent.budgets` setting (owner ag-ui, schema bounds required, e.g. maxSteps ≤
+  1000), read by main at run start; the loop takes an injected `budgetsFor(): RunBudgets`. Lifting a cap
+  to `null` requires a native confirm in the `settings.set` handler.
