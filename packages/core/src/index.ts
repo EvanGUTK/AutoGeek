@@ -22,5 +22,26 @@ export {
 export type { CoreError, ErrorCode } from './errors.ts';
 export { JsonObjectSchema, JsonValueSchema } from './json.ts';
 export type { JsonObject, JsonValue } from './json.ts';
+export { AgentModeSchema } from './mode.ts';
+export type { AgentMode } from './mode.ts';
+export {
+  EXEC_CLASSES,
+  FS_WRITE_OPS,
+  PERMISSION_DENY_REASONS,
+  PermissionActionSchema,
+  PermissionDecisionSchema,
+  PermissionRequestInputSchema,
+  PermissionRequestSchema,
+  ToolRiskSchema,
+  denyAllGate,
+} from './permissions.ts';
+export type {
+  PermissionAction,
+  PermissionDecision,
+  PermissionGate,
+  PermissionRequest,
+  PermissionRequestInput,
+  ToolRisk,
+} from './permissions.ts';
 export { andThen, err, map, mapErr, ok, unwrapOr } from './result.ts';
 export type { Err, Ok, Result } from './result.ts';
