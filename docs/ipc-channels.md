@@ -146,6 +146,7 @@ no free-form key/value store. An unknown key is an error, not a silent write.
 | `editor.fontSize` | integer 8–32 | 13 |
 | `editor.wordWrap` | `'off' \| 'on'` | `'off'` |
 | `editor.minimap` | boolean | `true` |
+| `explorer.hideIgnored` | boolean (hide entries whose `ignored` is `'yes'`; cosmetic only) | `false` |
 | `agent.selection` | `{ credentialId: string; modelId: string } \| null` (opaque ids, no key material). **Per workspace root** | `null` |
 | `agent.budgets` | `{ maxSteps: int 1–1000; maxTokens: int 1_000–20_000_000 \| null; maxWallMs: int 60_000–14_400_000 \| null; maxSpendUsdMicros: int 10_000–100_000_000 \| null }`. The bounds are hard schema limits ($0.01 to $100, 4 hours). **Any raise above the contract defaults (50 steps, 2M tokens, 30 min, $2), and `null`, raises privilege**, so main confirms it with a native dialog showing old → new through the display-safe function (a renderer-side confirm proves nothing); `user_declined` leaves the value unchanged. Lowering needs no dialog. Read by main at run start through `budgetsFor()` (`docs/agent-contract.md` §11) | contract defaults |
 
@@ -203,8 +204,23 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 
 ### `workspace.listDir`
 - Input: `{ path: string }` (`''` = root).
-- Output: `{ entries: Array<{ name: string; kind: 'file' | 'dir' | 'symlink'; size?: number; ignored: boolean }> }`
-  sorted dirs-first. Symlinks are listed but never followed across the root boundary.
+- Output: `{ entries: Array<{ name: string; kind: 'file' | 'dir' | 'symlink'; size?: number; ignored: 'yes' | 'no' | 'unknown' }>; ignoreRules: 'ok' | 'limit_exceeded'; truncated: boolean }`
+  sorted directories first, then files in name order. Symlinks are listed but never followed across
+  the root boundary.
+- **`truncated`:** `listDir` always stops at `LIST_DIR_MAX_ENTRIES` = 5,000 entries, reading the
+  directory as a stream so memory and time stay bounded. `truncated: true` means there were more.
+  This applies to every call. The UI row reads "Showing the first 5,000 entries".
+- **`ignored` is tri-state and cosmetic only.** The matcher never runs `git` (trusted or not) and has
+  hard input caps (ag-workspace, `docs/workspace-path-cases.md` §11). When a cap trips because of a
+  hostile or broken `.gitignore`/`.ignore`, `listDir` still **succeeds**: every entry is `'unknown'`
+  and `ignoreRules` is `'limit_exceeded'`, so a hostile folder stays browsable. The UI then shows
+  all entries normally with a banner "This folder has ignore rules that are too large to read, so
+  ignored files can't be marked." A missing, unreadable or directory-typed ignore file counts as no
+  rules (`'ok'`). `ignored` never affects permissions, classification, containment or what the agent
+  may read, so **no security UI is built on it**: no "protected" badge, no read prompt. A path
+  flagged `'yes'` or `'unknown'` is classified exactly like any other. (The glob, grep and agent
+  tools return a typed error instead, since an agent must not search on guessed rules; that is not
+  this channel.)
 - Errors: `not_found`, `outside_workspace`.
 
 ### `workspace.readFile`
@@ -244,6 +260,9 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 - Payload: `{ changes: Array<{ kind: 'created' | 'modified' | 'deleted'; path: string }> }` (batched,
   coalesced and ignore-rule filtered in main; there is no per-file subscribe channel).
 - The tree and open editors reconcile from this; the renderer never polls.
+- If the ignore matcher hits a cap, the watcher falls back to fixed excludes (`.git`,
+  `node_modules`) and ag-workspace emits a degraded-state event (its name and payload are theirs to
+  define). The UI shows a notice "File watching is limited in this folder" and keeps working.
 
 ### `git.status`
 - Input: `{}`. Output: `{ branch: string | null; entries: Array<{ path: string; state: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted'; staged: boolean }> }`.
@@ -349,11 +368,11 @@ on:
 5. Budgets come from the `agent.budgets` setting (§2), read by main at run start through an injected
    `budgetsFor()`. The native confirmation lives in the `settings.set` handler.
 
-### 5.4 Remaining request to ag-agent
+### 5.4 `permissions.addRule` and `too_long`
 
-`permissions.addRule` shows a native confirmation whose text is bounded (`docs/ui-spec.md` §8). A rule
-whose literal text exceeds the bound must be refused, never shown cut, so `docs/agent-contract.md` §6
-should list `too_long` among its errors.
+`permissions.addRule` shows a native confirmation whose text is bounded (`docs/ui-spec.md` §8), so a
+rule whose literal text exceeds the bound is refused, never shown cut. This landed: `too_long` is among
+its errors in `docs/agent-contract.md` §6.
 
 ## 6. `auth.*` (owner: ag-auth)
 

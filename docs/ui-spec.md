@@ -575,6 +575,25 @@ palette in an untrusted folder, shows its own reason and never an empty or inert
 tree and editor keep working; declining the native confirmation leaves the folder untrusted; trust
 granted from one entry point enables all three without a reload.
 
+### 4.9 File tree
+
+The tree is a virtualized list (§3.8) driven by `workspace.listDir` per expanded directory and by
+`workspace.fsChanged`; the renderer never polls. Each directory is listed on expand, and a
+`fsChanged` for an expanded directory re-lists it.
+
+- **`truncated`:** a directory with more than the cap shows the first 5,000 entries and a final row
+  "Showing the first 5,000 entries". The row is text, not an error.
+- **`ignored`:** `'yes'` entries are dimmed (still readable by contrast, with a text cue in their
+  accessible name, "ignored"), and a setting can hide them. `'unknown'` entries look normal. When
+  `ignoreRules` is `'limit_exceeded'`, the directory shows a banner "This folder has ignore rules that
+  are too large to read, so ignored files can't be marked." and nothing is hidden on that basis.
+- **No security meaning:** `ignored` is cosmetic. No badge, prompt or behavior is derived from it;
+  protection is main's decision and arrives only as the errors on `readFile`/`writeFile`.
+- **Degraded watching:** the degraded-state event from ag-workspace shows a notice "File watching is
+  limited in this folder", and the tree keeps working from explicit refreshes.
+- Names are untrusted: a file name goes through `displaySafeLiteral` (inline mode), so bidi and
+  zero-width tricks in a name are visible. The accessible name carries the displayed form.
+
 ## 5. Approval-prompt UX
 
 Goal: the human approves **the thing that will actually happen**, in a form the model cannot
