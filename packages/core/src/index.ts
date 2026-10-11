@@ -1,4 +1,17 @@
 export { abortReason } from './abort.ts';
+export {
+  CREDENTIAL_KINDS,
+  CredentialKindSchema,
+  CredentialRefSchema,
+  createResolvedCredential,
+  isResolvedCredential,
+} from './credentials.ts';
+export type {
+  CredentialKind,
+  CredentialRef,
+  ResolvedCredential,
+  ResolvedCredentialInput,
+} from './credentials.ts';
 export { createEmitter } from './emitter.ts';
 export type { EmitterOptions, ListenOptions, TypedEmitter, Unsubscribe } from './emitter.ts';
 export {
