@@ -206,19 +206,28 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 
 ### `workspace.openFolder`
 - Input: `{}` (the renderer cannot supply a path; main shows the native dialog).
-- Output: `{ root: WorkspaceRoot; notice?: 'identity_changed' } | null` (`null` = user cancelled).
+- Output: `{ root: WorkspaceRoot; notice?: WorkspaceNotice } | null` (`null` = user cancelled), where
+  `WorkspaceNotice = { kind: 'identity_changed' | 'identity_unavailable'; folderName?: string }`.
   The absolute path is not returned, only a display name.
 - Trust is bound to the folder's identity. A folder whose identity differs from the one that was
   trusted opens as a NEW untrusted folder with its remembered root rules made inactive
-  (`docs/agent-contract.md` §12.3) and `notice: 'identity_changed'`, a closed enum shown once as "This
-  folder looks different from the one you trusted". A `stat` error or an unreadable trust record also
-  opens the folder untrusted, with no notice. New roots start untrusted until `workspace.setTrust`.
+  (`docs/agent-contract.md` §12.3) and `notice.kind: 'identity_changed'`, shown as "This folder looks
+  different from the one you trusted". On FAT, exFAT and similar volumes the folder's identity is
+  unusable, so trust there is **session-only**: the folder opens untrusted on every launch with
+  `notice.kind: 'identity_unavailable'` ("Trust isn't remembered on this drive"), and the UI never
+  uses the "looks different" text for it, since that would be false every launch and teach users to
+  ignore it. A `stat` error or an unreadable trust record also opens the folder untrusted, with no
+  notice. New roots start untrusted until `workspace.setTrust`.
+- **`folderName`** is the folder's basename only, never the path. It crosses IPC as the **raw string**,
+  because the display-safe brands are symbol properties that structured clone drops, so the renderer
+  applies `displaySafeLiteral` itself before showing it. Without it (for example when the name is
+  unavailable) the banner omits the name.
 - Errors: none beyond universal.
 
 ### `workspace.getState`
 - Input: `{}`. Output: `{ workspace: WorkspaceState; watch: WatchState }`, which **mirrors the two
   event payloads** so one `applyIfNewer` helper handles both streams:
-  - `WorkspaceState = { seq: number; root: WorkspaceRoot | null; notice?: 'identity_changed' }`, the
+  - `WorkspaceState = { seq: number; root: WorkspaceRoot | null; notice?: WorkspaceNotice }`, the
     same shape as the `workspace.stateChanged` payload, where
     `WorkspaceRoot = { name: string; trusted: boolean; available: true } | { name: string; trusted: boolean; available: false; reason: 'missing' | 'identity_changed' }`
     (`reason` is absent when `available` is true; `root: null` means no folder is open).
@@ -260,11 +269,14 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
     only an explicit re-open plus a fresh trust confirmation clears it. A `missing` root that returns
     as a different folder becomes `identity_changed` with one `seq` bump. A `missing` root that was
     already untrusted still reports `missing`, so the UI never infers the reason from `trusted`.
-- **The notice lives in state.** `notice?: 'identity_changed'` is part of `WorkspaceState`, set by the
-  transition that opens a changed-identity folder or by a skipped launch restore, and cleared only by
-  transitions that bump `seq` (`setTrust` either way, `openFolder` of any folder, closing the
-  folder). `getState` never mutates it. The banner's "Hide" action is renderer-local and not stored,
-  so a reload shows it again from state; it is display-only.
+- **The notice lives in state.** `notice?: WorkspaceNotice` (`{ kind, folderName? }`) is part of
+  `WorkspaceState`, set by the transition that opens a changed-identity (or identity-unavailable)
+  folder or by a skipped launch restore, and cleared only by transitions that bump `seq` (`setTrust`
+  either way, `openFolder` of any folder, closing the folder). `getState` never mutates it. The
+  banner's "Hide" action is renderer-local and not stored, so a reload shows it again from state; it
+  is display-only. **Invariant: `notice` is set only when `root` is `null` or untrusted** (only
+  `setTrust(true)` makes a root trusted, and it clears the notice). The unavailable and returning
+  transitions keep the notice. ag-workspace's store property test asserts the invariant.
 - **Launch restore** is desktop's, under these rules: the last folder reopens only if it exists and
   its identity matches; otherwise it is never auto-opened and the app starts with `root: null`, with
   the notice set when the identity changed (a missing or unreadable root starts with `root: null` and
@@ -344,7 +356,8 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 - Input: `{ path: string; text: string; expectedVersion?: string }` (the `version` from the read).
 - Output: `{ version: string; mtimeMs: number }`.
 - Errors: `outside_workspace`, `user_declined`, `protected_path`, `conflict` (disk changed since
-  `expectedVersion`), `too_large`, `too_long` (as for `readFile`). Confirmable paths use the same native
+  `expectedVersion`; also when `expectedVersion` is given and the file no longer exists, which is
+  never silently a create), `too_large`, `too_long` (as for `readFile`). Confirmable paths use the same native
   confirmation as `workspace.readFile`; hard-denied paths are `protected_path`.
 - Writes are atomic (temp file + rename) in main. The UI offers "overwrite / reload / compare" on
   `conflict`.
@@ -493,9 +506,14 @@ inactive, and they never apply (`docs/agent-contract.md` §12.3; global rules ar
 **Re-trusting a folder does not reactivate its rules.** Only `permissions.reactivateRules` does.
 
 `permissions.reactivateRules { ruleIds }` takes 1..50 ids and returns
-`{ count, dropped: Array<{ ruleId, reason: 'invalid_rule' }> }`. Errors: `not_found`, `too_many`,
-`too_long` (the combined confirmation text would exceed the bound, so the UI retries with fewer ids),
-`user_declined`. Main re-validates each rule; invalid ones stay inactive and come back in `dropped`.
+`{ count, dropped: Array<{ ruleId, reason: 'invalid_rule' | 'too_long' }> }`. Errors: `not_found`, `too_many`,
+`too_long` (the **combination** is too big: no single rule is oversize, but the combined
+confirmation text would exceed the bound, so the UI retries with fewer ids), `user_declined`. Main
+re-validates each rule; invalid ones stay inactive and come back in `dropped`. A single rule whose
+confirmation text, plus the reactivation header and folder name, exceeds the bound is reported in
+`dropped` with reason `too_long`, even when it is the only id, so a one-id request never fails with a
+whole-call `too_long` and the UI never retries a single id. `dropped.reason` is therefore
+`'invalid_rule' | 'too_long'`.
 Main shows a native confirmation listing every valid rule literally (with the persistent-rule
 sentence for command allow rules). The move is all-or-nothing for the valid set; if every rule is
 invalid there is no confirmation and the reply is `{ count: 0, dropped }`. The renderer sends only the
