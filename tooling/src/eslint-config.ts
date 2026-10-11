@@ -84,6 +84,8 @@ export function createEslintConfig(options: EslintConfigOptions): Linter.Config[
           { considerDefaultExhaustiveForUnions: false },
         ],
         'no-restricted-syntax': ['error', CHAINED_ASSERTION],
+        // Not part of strictTypeChecked. Catches `JSON.parse(raw) as Config` and `cast<T>(x: unknown)`.
+        '@typescript-eslint/no-unsafe-type-assertion': 'error',
       },
     },
     {
