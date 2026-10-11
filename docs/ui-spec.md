@@ -397,7 +397,17 @@ Data comes from `auth.list` (`CredentialRef`: label, provider, kind), the provid
 - **Keyless providers.** The catalog's `acquisition` decides which credential step the provider
   shows. A provider that needs no key shows no key field and no "Add key" step, and its credential
   entry in the picker is a secretless record (`CredentialRef.kind: 'none'`) that is simply the
-  server and its URL.
+  server and its URL. It is created with `auth.addKeyless { providerId, label, baseUrl }`; an
+  API-key provider with an editable endpoint is created with `auth.addApiKey` plus `baseUrl`, and the
+  form shows the URL field only when the catalog says the endpoint is editable. Both creations run the
+  same main-built endpoint confirmation as an edit, so the form shows only the pending state and the
+  result; `user_declined` and `too_long` mean nothing was created, and neither is an error toast.
+- **Credential errors** are explained from a constant table keyed on the code or on `details.kind`:
+  `secure_storage_unavailable` says "your OS keychain isn't available" for `encryption_unavailable`
+  and "only plaintext storage is available, so install or enable libsecret or KWallet" for
+  `insecure_backend`, and the key is never kept in that case. `duplicate`, `validation_failed` (the
+  provider rejected the key), `validator_unreachable`, `store_corrupt` and `store_io` each get their
+  own sentence. No message from the server is displayed.
 - The always-visible "which key and model is this turn using" indicator reads credential label,
   provider, and model id from `run_started.model` (the turn actually running), and it is the same
   data as the approval card's context line.
@@ -550,6 +560,16 @@ with the diff for the selected file.
   the system dialog" and then the result. The static note above is explanation in the editor, not a
   copy of the dialog. `user_declined` leaves the list unchanged and is reported neutrally ("Not
   added"), not as an error. Deny and ask rules are added without a dialog.
+- **Inactive rules.** When a folder opens with a changed identity, its root-scoped rules are kept but
+  never apply. The editor lists them in a separate group, "inactive: this folder looks different from
+  the one these rules were made for", with each rule shown literally. **Re-trusting the folder does not
+  reactivate them**, and the group says so. **Reactivate…** sends only the chosen ids (1 to 50) to
+  `permissions.reactivateRules`; **main** shows a native confirmation listing each valid rule
+  literally, and the UI never previews it. The result reports `count` and `dropped`: "N rules could
+  not be reactivated and stay inactive" for invalid ones. `user_declined` leaves everything inactive
+  and is not an error; `too_long` (the combined confirmation text is too big) asks the user to select
+  fewer rules; `too_many` cannot happen because the selection is capped at 50. Global rules are
+  unaffected and stay in the normal list.
 - A prompt never creates a saved rule (§5.4); this editor is the only way.
 
 ### 4.8 Open folder and workspace trust
@@ -583,6 +603,29 @@ untrusted and is not an error; the UI shows the prompt again only when the user 
 feature. `too_long` (a path too long for the dialog) is explained in words. Revoking trust takes
 effect at once and the session approvals for that root are cleared (`docs/agent-contract.md` §2);
 the UI refreshes from `workspace.stateChanged`, not by guessing.
+
+**An unavailable folder** (`root.available: false`) keeps the editors and their unsaved text. A
+persistent banner explains the reason, saving and file operations pause with that reason, and nothing
+is closed:
+
+| `reason` | Banner | Behavior |
+|---|---|---|
+| `missing` | "Folder unavailable. We'll reconnect if it comes back." | Editors stay, unsaved text is kept, saves are paused. Main reconnects on its own after an identity check, and the banner clears when `available` returns to true |
+| `identity_changed` | "The folder at this path is not the one you opened. Re-open it to continue." | Trust is gone. There is no auto-reconnect, even if the original returns. The banner offers **Open folder…**, and trust needs a fresh native confirmation |
+
+`getState` and `workspace.stateChanged` are authoritative for "the folder is gone"; a `watch_error`
+from `fsWatchState` only makes the UI call `getState`. The services return `root_unavailable` for
+every operation, so no UI path can use a vanished folder.
+
+**The identity notice** (`notice: 'identity_changed'` in the workspace state) shows once as a banner,
+"This folder looks different from the one you trusted", with the lines "It opened as a new folder, so
+trust must be given again" and "Saved rules for the old folder were made inactive (see Settings)". It
+appears after opening a changed-identity folder, and on the Welcome screen when launch restore
+skipped such a folder (the app then starts with no folder open). It is display-only: trust is the
+state, and trust comes back only through the native confirmation. **Hide** is renderer-local and not
+stored, so a reload shows it again from state; the notice is cleared by `setTrust`, opening a folder or
+closing it, never by reading it. A missing or unreadable folder at launch starts with no folder and
+no notice.
 
 Tests: each of the three features, invoked by pointer, by keyboard shortcut and from the command
 palette in an untrusted folder, shows its own reason and never an empty or inert control; the file
