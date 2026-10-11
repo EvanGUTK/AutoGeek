@@ -18,6 +18,7 @@ export {
   createCoreErrorSchema,
   fromZodError,
   isAbortError,
+  isTimeoutError,
   toCoreError,
 } from './errors.ts';
 export type { CoreError, ErrorCode } from './errors.ts';

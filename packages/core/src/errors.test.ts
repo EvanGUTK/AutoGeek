@@ -10,6 +10,7 @@ import {
   createCoreErrorSchema,
   fromZodError,
   isAbortError,
+  isTimeoutError,
   toCoreError,
 } from './errors.ts';
 
@@ -321,5 +322,69 @@ describe('the closed ErrorCode set', () => {
     });
     expect(CoreErrorSchema.safeParse(error).success).toBe(true);
     expect(error.message).toBe(ERROR_MESSAGES.secure_storage_unavailable);
+  });
+});
+
+describe('timeouts (review K4)', () => {
+  async function timedOutReason(): Promise<unknown> {
+    const signal = AbortSignal.timeout(1);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    return signal.reason;
+  }
+
+  it('recognises the TimeoutError that AbortSignal.timeout() aborts with', async () => {
+    const reason = await timedOutReason();
+    expect(isTimeoutError(reason)).toBe(true);
+    expect(isAbortError(reason)).toBe(false);
+  });
+
+  it('does not mistake other errors or values for a timeout', () => {
+    expect(isTimeoutError(new Error('x'))).toBe(false);
+    expect(isTimeoutError('TimeoutError')).toBe(false);
+    expect(isTimeoutError(AbortSignal.abort().reason)).toBe(false);
+  });
+
+  it('maps a timeout to the timeout code, not internal', async () => {
+    const error = toCoreError(await timedOutReason(), 'ref-1');
+    expect(error).toEqual({ code: 'timeout', message: ERROR_MESSAGES.timeout });
+  });
+});
+
+describe('fromZodError never echoes caller-supplied key names (review K3)', () => {
+  const secret = 'sk-live-SUPERSECRET';
+
+  it('does not name unrecognized keys', () => {
+    const parsed = z.strictObject({ name: z.string() }).safeParse({ name: 'x', [secret]: 1 });
+    if (parsed.success) {
+      expect.unreachable('expected a validation failure');
+    }
+    const serialized = JSON.stringify(fromZodError(parsed.error));
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain('Unrecognized');
+  });
+
+  it('keeps the issue path for ordinary schema properties', () => {
+    const parsed = z.strictObject({ nested: z.strictObject({ n: z.number() }) }).safeParse({
+      nested: { n: 'x' },
+    });
+    if (parsed.success) {
+      expect.unreachable('expected a validation failure');
+    }
+    expect(fromZodError(parsed.error).details).toEqual({
+      issues: [{ path: 'nested.n', message: expect.any(String) as unknown }],
+    });
+  });
+
+  it('does not echo the value that failed an enum, literal or union', () => {
+    const schema = z.strictObject({
+      mode: z.enum(['a', 'b']),
+      kind: z.literal('x'),
+      either: z.union([z.literal(1), z.literal(2)]),
+    });
+    const parsed = schema.safeParse({ mode: secret, kind: secret, either: secret });
+    if (parsed.success) {
+      expect.unreachable('expected a validation failure');
+    }
+    expect(JSON.stringify(fromZodError(parsed.error))).not.toContain(secret);
   });
 });

@@ -118,13 +118,17 @@ export function coreError(code: ErrorCode, details?: JsonValue): CoreError {
 
 /**
  * Converts a zod failure to `invalid_input`. Only issue paths and zod's own messages are kept;
- * the rejected input is never echoed, because it may be (or contain) a secret.
+ * the rejected input is never echoed, because it may be (or contain) a secret. Unrecognized-key
+ * issues are reduced to a constant message because zod names the offending keys, which are
+ * caller-supplied. Issue paths name schema properties; keys of a record are also caller data, so
+ * a schema that maps secret-bearing strings as record keys would expose them in `path` and must
+ * not be used on a channel.
  */
 export function fromZodError(error: z.ZodError): CoreError {
   return coreError('invalid_input', {
     issues: error.issues.map((issue) => ({
       path: issue.path.map(String).join('.'),
-      message: issue.message,
+      message: issue.code === 'unrecognized_keys' ? 'Unrecognized keys.' : issue.message,
     })),
   });
 }
@@ -133,14 +137,22 @@ export function isAbortError(thrown: unknown): boolean {
   return thrown instanceof Error && thrown.name === 'AbortError';
 }
 
+/** The `TimeoutError` that `AbortSignal.timeout()` aborts with. */
+export function isTimeoutError(thrown: unknown): boolean {
+  return thrown instanceof Error && thrown.name === 'TimeoutError';
+}
+
 /**
- * Last-resort conversion of a thrown value at a process boundary. Aborts become `cancelled`;
- * everything else is `internal` carrying only a correlation id (the caller logs the original
+ * Last-resort conversion of a thrown value at a process boundary. Aborts become `cancelled`,
+ * timeouts become `timeout`; everything else is `internal` carrying only a correlation id (the caller logs the original
  * error under that id). The thrown message is dropped on purpose: it may contain secrets.
  */
 export function toCoreError(thrown: unknown, correlationId: string): CoreError {
   if (isAbortError(thrown)) {
     return coreError('cancelled');
+  }
+  if (isTimeoutError(thrown)) {
+    return coreError('timeout');
   }
   return coreError('internal', { ref: correlationId });
 }
