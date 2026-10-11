@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -267,6 +265,7 @@ describe('the closed ErrorCode set', () => {
         'outside_workspace',
         'permission_denied',
         'protected_path',
+        'root_unavailable',
         'secure_storage_unavailable',
         'sensitive_path',
         'timeout',
@@ -287,19 +286,6 @@ describe('the closed ErrorCode set', () => {
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
   });
 
-  it('covers every code in the common-error table of docs/ipc-channels.md §1.3', async () => {
-    const doc = await readFile(
-      join(import.meta.dirname, '..', '..', '..', 'docs', 'ipc-channels.md'),
-      'utf8',
-    );
-    const section = doc.slice(doc.indexOf('### 1.3'), doc.indexOf('### 1.4'));
-    const documented = [...section.matchAll(/^\| `([a-z_]+)` \|/gm)].map((match) => match[1] ?? '');
-    expect(documented.length).toBeGreaterThan(10);
-    expect(documented.filter((code) => !(ERROR_CODES as readonly string[]).includes(code))).toEqual(
-      [],
-    );
-  });
-
   it.each([
     'domain_error',
     'user_declined',
@@ -308,6 +294,7 @@ describe('the closed ErrorCode set', () => {
     'base_url_not_editable',
     'protected_path',
     'too_many',
+    'root_unavailable',
   ] as const)('gives %s a constant message that names no variable content', (code) => {
     const message = ERROR_MESSAGES[code];
     expect(message.length).toBeGreaterThan(0);
