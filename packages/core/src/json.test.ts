@@ -165,4 +165,35 @@ describe('untrusted JSON is bounded and validation never throws (review K1)', ()
     const result = JsonValueSchema.safeParse({ key: secret, bad: undefined });
     expect(JSON.stringify(result.error?.issues)).not.toContain(secret);
   });
+
+  it('rejects accessor properties: a getter could return a different value after validation (review D3)', () => {
+    const withGetter = {};
+    Object.defineProperty(withGetter, 'a', { get: () => 1, enumerable: true });
+    const withSetter = {};
+    Object.defineProperty(withSetter, 'a', { set: () => undefined, enumerable: true });
+    expect(JsonValueSchema.safeParse(withGetter).success).toBe(false);
+    expect(JsonValueSchema.safeParse({ nested: withGetter }).success).toBe(false);
+    expect(JsonObjectSchema.safeParse(withGetter).success).toBe(false);
+    expect(JsonValueSchema.safeParse(withSetter).success).toBe(false);
+  });
+
+  it('rejects an accessor on an array index too', () => {
+    const array = [1, 2, 3];
+    Object.defineProperty(array, 1, { get: () => 2, enumerable: true });
+    expect(JsonValueSchema.safeParse(array).success).toBe(false);
+  });
+
+  it('never invokes a getter while validating', () => {
+    let calls = 0;
+    const trap = {};
+    Object.defineProperty(trap, 'a', {
+      get: () => {
+        calls += 1;
+        return 1;
+      },
+      enumerable: true,
+    });
+    JsonValueSchema.safeParse(trap);
+    expect(calls).toBe(0);
+  });
 });

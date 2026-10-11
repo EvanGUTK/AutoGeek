@@ -72,9 +72,14 @@ function findJsonProblem(root: unknown, mustBeObject: boolean): string | undefin
       if (nodes + value.length > JSON_MAX_NODES) {
         return MESSAGES.tooManyNodes;
       }
-      // A hole reads as undefined and is rejected as not JSON when it is visited.
-      for (const element of value) {
-        stack.push({ value: element, depth: depth + 1 });
+      // Read own data properties through their descriptors: a getter could return a different
+      // value after validation, and a hole has no descriptor. Neither is JSON.
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, index);
+        if (descriptor === undefined || !('value' in descriptor)) {
+          return MESSAGES.notJson;
+        }
+        stack.push({ value: descriptor.value, depth: depth + 1 });
       }
       continue;
     }
@@ -86,7 +91,11 @@ function findJsonProblem(root: unknown, mustBeObject: boolean): string | undefin
       return MESSAGES.tooManyNodes;
     }
     for (const key of keys) {
-      stack.push({ value: Reflect.get(value, key), depth: depth + 1 });
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !('value' in descriptor)) {
+        return MESSAGES.notJson; // an accessor: it could return something else later
+      }
+      stack.push({ value: descriptor.value, depth: depth + 1 });
     }
   }
   return undefined;
