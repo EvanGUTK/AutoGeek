@@ -120,6 +120,10 @@ documented as weaker in `docs/SECURITY.md`; tests assert the fallback path is ex
 | 6.5 | root that is a symlink at registration | stored as its realpath; the original spelling is kept for display only |
 | 6.6 | root is `/` or the user's home directory | reject at registration (`root_too_broad`) |
 | 6.7 | root does not exist or is a file | reject at registration |
+| 6.8 | untrusted root: FS `list`/`read`/`write` (restricted mode, chief ruling) | allowed, with containment, symlink, sensitive and `protected_path` rules enforced in full |
+| 6.9 | untrusted root: git service, `GitRunner`, PTY service | each refuses with `untrusted_workspace` at the service level (defense in depth; main also checks per channel) |
+| 6.10 | repo-controlled config in any root | never treated as code: `.gitignore` is parsed as data only; ripgrep runs with `--no-config`, never `--pre`, and no `RIPGREP_CONFIG_PATH` in its env |
+| 6.11 | trust revoked while a git/PTY operation is in flight | the operation is aborted and the PTY is killed; a later call returns `untrusted_workspace` |
 
 ## 7. Sensitive-path classifier
 
