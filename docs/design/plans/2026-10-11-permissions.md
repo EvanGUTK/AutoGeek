@@ -529,7 +529,7 @@ audit append fails, return deny `policy` / `audit_failed`.
 **Interfaces:**
 - Produces:
   - `createApprovalBroker(deps: { emit(e: BrokerEvent): void; grants: SessionGrantStore; rules: RuleStore; workspace: …same as gate…; confirm(text: string): Promise<boolean>; audit: AuditSink }): ApprovalBroker`
-  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; listInactiveRules(previousRootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule; reason: 'identity_changed' }[], RuleStoreError>>; reactivateRules(args: { from: string; ruleIds: readonly string[] }): Promise<Result<{ count: number; dropped: readonly { ruleId: string; reason: 'invalid_rule' }[] }, RuleStoreError | { code: 'not_found' | 'too_many' | 'user_declined' | 'too_long' }>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' | 'too_long' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
+  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; listInactiveRules(previousRootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule; reason: 'identity_changed' }[], RuleStoreError>>; reactivateRules(args: { from: string; ruleIds: readonly string[] }): Promise<Result<{ count: number; dropped: readonly { ruleId: string; reason: 'invalid_rule' | 'too_long' }[] }, RuleStoreError | { code: 'not_found' | 'too_many' | 'user_declined' | 'too_long' }>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' | 'too_long' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
   - `type BrokerEvent = { type: 'approval_requested'; prompt: ApprovalPrompt } | { type: 'approval_resolved'; approvalId: string; outcome: 'allowed_once' | 'allowed_session' | 'denied' | 'run_stopped' }`
 
 Rules:
@@ -548,7 +548,12 @@ Rules:
 - `reactivateRules` (chief: all-or-nothing, re-validated):
   1. Re-validate every named rule against the current core `PolicyRuleInput` schema, including
      refinements. Invalid ones are **dropped from the batch**: they stay quarantined, are never
-     applied, and are reported in `dropped`.
+     applied, and are reported in `dropped` with `invalid_rule`.
+     - A rule whose text **alone** wouldn't fit in a one-rule reactivation confirm (header +
+       its text + the maximum footer > `CONFIRM_TEXT_MAX`) is dropped with `too_long` (chief
+       refinement).
+     - Because the per-rule check includes the header and footer budget, any single surviving
+       rule always fits by itself.
   2. Build a native confirm: "This folder looks different from the one these rules were made
      for. Reactivate:", then each VALID rule literally via `describeRuleForConfirm`. That text
      includes `PERSISTENT_EXEC_RULE_NOTICE` for command allow rules. If any were dropped, add
@@ -557,9 +562,10 @@ Rules:
      `rules.reactivate({ from, to: currentRootKey, ruleIds: validIds })`, then audit
      `rules_reactivated` with the moved and dropped ids.
   4. If every named rule is invalid, there's no confirm. Return `{ count: 0, dropped }`.
-  5. If the combined confirm text would exceed `CONFIRM_TEXT_MAX`, return `too_long`
-     (approved by the chief for contract §6). There's no confirm and no change, and the UI
-     retries with fewer rules.
+  5. If the combined confirm text of the surviving rules would exceed `CONFIRM_TEXT_MAX`, return
+     the whole-call `too_long`, which means only "this COMBINATION is too big" (chief). There's
+     no confirm and no change, and the UI retries with fewer ids. By step 1 this can never
+     happen for a one-id request.
   The audit `kind` union gains `'rules_quarantined' | 'rules_reactivated'` with
   `{ rootKeys | from, to, count }`.
 
@@ -570,6 +576,8 @@ owner of each run.
   - one per rule above;
   - `approval_resolved is emitted exactly once per approval on every path`;
   - `reactivation drops invalid rules, confirms only valid ones, and is all-or-nothing`;
+  - `a rule too long on its own is dropped as too_long, not a whole-call error`;
+  - property: `a one-id reactivateRules never returns the whole-call too_long`;
   - `reactivation confirm shows the persistent exec-rule notice for command allow rules`.
 - [ ] **Steps 2–4**, **Step 5: Commit** `feat(permissions): add approval broker for the permissions channels`.
 
