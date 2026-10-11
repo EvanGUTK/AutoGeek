@@ -450,8 +450,8 @@ rule whose literal text exceeds the bound is refused, never shown cut. This land
 its errors in `docs/agent-contract.md` §6.
 
 For an `allow` rule of kind `argv`, `argv_prefix` or `shell`, main's confirmation text ends with the
-sentence "This rule keeps applying even if scripts, Makefiles or package.json change", and the
-Settings editor shows the same sentence as a static note on every such rule (`docs/ui-spec.md` §4.7).
+persistent-rule sentence from the `core` export, and the Settings editor shows the same sentence as a
+static note on every such rule (`docs/ui-spec.md` §4.7, which quotes it once as an example).
 Persistent exact rules are explicit user choices and are not cleared by the exec-grant clearing
 triggers; the residual risk is recorded in SECURITY.md by ag-agent. The sentence is a constant exported
 by `core`, so main and the renderer cannot drift. The renderer never builds or previews the dialog
