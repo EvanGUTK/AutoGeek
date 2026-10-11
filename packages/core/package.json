@@ -1,0 +1,25 @@
+{
+  "name": "@autogeek/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "autogeek": {
+    "environment": "neutral"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@autogeek/tooling": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
