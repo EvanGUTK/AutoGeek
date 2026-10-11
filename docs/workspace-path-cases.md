@@ -265,3 +265,34 @@ The file `version` token is an opaque string derived from SHA-256 of the bytes, 
 The compare happens as late as possible before the atomic rename. A narrow race remains between
 that compare and the rename (POSIX has no compare-and-rename); it is documented in the code and in
 `docs/SECURITY.md`, not hidden.
+
+## 11. Ignore state computed in-process, as data (`workspace.listDir` `ignored`)
+
+The `ignored` flag, the file tree, the watcher and `glob`/`grep` all use one in-process ignore
+matcher that parses `.gitignore` and `.ignore` files as text. It never runs `git` (not
+`git check-ignore`, not `git status`), in trusted roots either, so the flag is identical in both
+modes and a repository's config cannot make listing execute anything (chief ruling, reviewer note).
+Rules follow gitignore semantics; where a case differs from git's behavior, git's documented
+behavior wins and the case says so.
+
+| # | Scenario | Expected |
+|---|---|---|
+| 11.1 | hostile `.git/config` (`core.fsmonitor`, `core.excludesFile` pointing at a script, `include.path`) and a hostile hook, then `listDir` on an untrusted root | sentinel file is never created; no child process is spawned (the test runs with a spawn guard that fails on any `child_process` call) |
+| 11.2 | root `.gitignore` with `*.log`, `build/`, `!keep.log` | `a.log` ignored, `keep.log` not, `build` dir ignored, a file named `build` ignored only if it is a directory rule match (`build/` matches directories only) |
+| 11.3 | anchored `/foo` vs unanchored `foo` | `/foo` matches only at the root of the directory that holds the `.gitignore` |
+| 11.4 | nested `.gitignore` in `sub/` | applies only below `sub/`; deeper files win over shallower on conflict, last matching rule wins within a file |
+| 11.5 | negation under an ignored parent (`build/` then `!build/keep`) | `build/keep` stays ignored (git does not re-include files whose parent directory is excluded) |
+| 11.6 | `**` forms: `**/x`, `a/**`, `a/**/b` | match as documented for gitignore |
+| 11.7 | trailing spaces, escaped `\#`, escaped `\!`, comment lines, blank lines, CRLF line endings, BOM | handled as git does |
+| 11.8 | `.git/info/exclude` | honored if present (read as data) |
+| 11.9 | global excludes (`core.excludesFile`, `~/.config/git/ignore`) | NOT read: the matcher never consults git config, so a repo cannot point it at another file; the user-level global file is out of scope in v1 and documented |
+| 11.10 | `.ignore` files (ripgrep convention) | honored the same way as `.gitignore` |
+| 11.11 | `.gitignore` is a symlink to a file outside the root | not followed (treated as absent), rule files must resolve inside the root |
+| 11.12 | `.gitignore` is a directory, unreadable, or larger than 1 MiB | treated as absent / truncated at the cap, never an exception; size cap prevents a ReDoS or memory attack |
+| 11.13 | pathological patterns (`*` repeated thousands of times, deeply nested `**`) | matching is linear-time (translated without backtracking-prone regex) or capped; test asserts a time bound |
+| 11.14 | case-insensitive volume (macOS) | pattern matching is case-sensitive as in git's default `core.ignorecase=false`; documented. On case-insensitive volumes the matcher uses the on-disk name, not the requested spelling |
+| 11.15 | NFC vs NFD names | compared on the on-disk name, byte-exact; documented as git's behavior |
+| 11.16 | `listDir` of `.git` itself | listed but flagged ignored; never expanded by the tree watcher |
+| 11.17 | `ignored` entries are still listed (flag only), while `glob`/`grep`/the watcher skip ignored paths by default | tested per consumer |
+| 11.18 | a sensitive file that is also gitignored (`.env`) | `ignored: true`, still `sensitive`; ignoring never lowers sensitivity |
+| 11.19 | ignore matcher output equals `git check-ignore` on a corpus of generated trees | a differential test run only in CI where `git` exists, using the hardened `GitRunner` on a repo the test itself creates (not the hostile one) |
