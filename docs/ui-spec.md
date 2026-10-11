@@ -619,10 +619,14 @@ implements it so main and the renderer cannot drift; it is specified, with test 
   render as a visible glyph. Collapsing replaces content with a marker that states what was
   removed; nothing is silently dropped.
 - Wraps without truncation. The action block has a maximum height; when it overflows it shows a
-  persistent "N more lines below" indicator and a **Show all** control that expands it in place.
-  **While the block overflows and has not been expanded or scrolled to its end, the allow buttons
-  stay in their armed-off state (§5.3)**, so the dangerous tail of a long command cannot be missed
-  by approving the visible head. Deny is never held back.
+  persistent "N more lines below" indicator and a **Show all** control (keyboard-operable) that
+  expands it in place. An **end sentinel** sits after the last field of the action (the last
+  command line, the last diff line, the last env entry). **The allow buttons stay in their
+  armed-off state (§5.3) until the end sentinel has been fully inside the viewport at some point
+  since arming**, judged by an `IntersectionObserver` with the viewport as root, so ancestor
+  clipping counts. That one condition covers a block taller than its box, a short panel that clips
+  the dock, and a "Show all" that grows taller than the screen. The dangerous tail of a long command
+  cannot be missed by approving the visible head. Deny is never held back.
 
 ### 5.3 Decisions
 
@@ -646,7 +650,7 @@ implements it so main and the renderer cannot drift; it is specified, with test 
      programmatic `click()`. It is false until **all** hold:
      - at least 400 ms have passed since the card was *armed*;
      - the window is focused and visible;
-     - the action block is not overflowing, or has been expanded or scrolled to its end (§5.2);
+     - the action's end sentinel has been fully inside the viewport since arming (§5.2);
      - for keyboard: the originating `keydown` happened after arming and is not a repeat
        (`KeyboardEvent.repeat` is ignored), so a held Enter cannot walk through a queue;
      - for pointer: both `pointerdown` and `pointerup` happened after arming and on the same button,
@@ -655,8 +659,10 @@ implements it so main and the renderer cannot drift; it is specified, with test 
      the dock or action-block geometry (resize, panel expand or collapse, "Show all", content change);
      a change to `offered`; the window regaining focus or becoming visible; and queue advance.
   4. While not armed, the allow buttons carry `aria-disabled="true"` and a visible dimmed style, so
-     assistive technology and pointer users see the same state; they remain focusable. There is no
-     animation (reduced-motion safe).
+     assistive technology and pointer users see the same state; they remain focusable. They are
+     linked by `aria-describedby` to a text reason that names what is missing ("Review the full
+     command first: 14 more lines" or "Wait a moment"), and **Show all** is reachable by keyboard
+     right before them. There is no animation (reduced-motion safe).
 - The decision button is disabled while submitting; a second activation is ignored (no double
   resolution). If main reports `no_longer_pending`, the card shows that state and dismisses itself.
   An `invalid_input` (a decision not in `offered`) keeps the card and shows an error.
@@ -726,8 +732,10 @@ for some actions it is wider than "the thing you just saw":
   or 500 spaces before a dangerous tail render as inert text with visible markers; no element other
   than text nodes is created from them. The same corpus is run through every field, including
   `tool`, MCP names, paths, URLs, env and JSON keys.
-- Long content: an overflowing command keeps the allow buttons unarmed until expanded or scrolled to
-  the end; Deny works throughout.
+- Long content: an overflowing command keeps the allow buttons unarmed until the end sentinel has
+  been fully in the viewport; the same holds when a short panel clips the dock and when "Show all"
+  grows taller than the window. The reason text is exposed through `aria-describedby`. Deny works
+  throughout.
 - Buttons: only `offered` decisions render; no allow-all/"always"/pattern control exists in the
   component's API or DOM (a type-level and a runtime test).
 - Guard: a click 100 ms after the card appears does nothing; a `pointerdown` before arming with a
@@ -764,10 +772,16 @@ shaped so privileged capabilities can later move out of the view that renders mo
    CSS `url()` payloads) and asserts on the rendered DOM: no `script`, no `on*` attributes, no
    dangerous URL schemes, no elements outside the allowlist.
 3. **No `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
-   `eval` or `new Function` anywhere else.** Enforced by lint in the shared tooling package and
-   tested through the real `eslint` CLI with the circumventions that would be tried (spread props
-   carrying the attribute, a ref plus assignment, an alias import), per L-003. A violation fails
-   `pnpm verify`; there is no suppression path.
+   `eval` or `new Function` anywhere else.** Two layers, because lint cannot see computed or
+   spread property names:
+   - **Lint** in the shared tooling package, tested through the real `eslint` CLI with the
+     circumventions that would be tried (a ref plus assignment, an alias import), per L-003. It is
+     the early signal and fails `pnpm verify`; there is no suppression path.
+   - **Trusted Types at runtime**, requested from ag-foundation as part of the CSP:
+     `require-trusted-types-for 'script'`, with `trusted-types` listing only the policy names
+     Monaco actually registers (read from the installed Monaco version, not guessed). An e2e test
+     asserts that assigning a string to `innerHTML` throws, and that a spread-prop attempt fails
+     the same way. This is what makes the ban hold against code the linter cannot read.
 4. **External links go through main.** A link is rendered with its URL visible (the link text never
    hides the destination) and a "copy" action. The open action calls `app.openExternal { url }`
    (`docs/ipc-channels.md` §7.1): http and https only, always a native confirmation that shows the
