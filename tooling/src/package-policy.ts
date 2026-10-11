@@ -520,10 +520,13 @@ async function checkSurface(
     return (await exists(join(root, dir, 'src', 'index.ts'))) ? [] : bad('src/index.ts is missing');
   }
   if (dir === 'tooling') {
-    const allowed = JSON.stringify({ './vitest': './src/vitest/config.ts' });
+    const allowed = JSON.stringify({
+      './vitest': './src/vitest/config.ts',
+      './vitest-smoke': './src/vitest/smoke-config.ts',
+    });
     return manifest.exports === undefined || exportsField === allowed
       ? []
-      : bad('tooling may only export ./vitest');
+      : bad('tooling may only export ./vitest and ./vitest-smoke');
   }
   return manifest.exports === undefined ? [] : bad('apps must not declare exports');
 }

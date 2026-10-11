@@ -6,7 +6,8 @@
     "environment": "node"
   },
   "exports": {
-    "./vitest": "./src/vitest/config.ts"
+    "./vitest": "./src/vitest/config.ts",
+    "./vitest-smoke": "./src/vitest/smoke-config.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",

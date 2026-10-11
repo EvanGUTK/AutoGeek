@@ -760,6 +760,50 @@ describe('public surface shape (the boundary rules depend on it)', () => {
   });
 });
 
+describe('tooling exports', () => {
+  async function toolingCodes(exports: unknown): Promise<string[]> {
+    const files = packageFiles('tooling', 'node');
+    const manifestJson = JsonRecord.parse(JSON.parse(files['package.json'] ?? '{}'));
+    manifestJson['exports'] = exports;
+    await mkdir(join(repo, 'tooling', 'src'), { recursive: true });
+    for (const [name, content] of Object.entries({
+      ...files,
+      'package.json': JSON.stringify(manifestJson),
+    })) {
+      const target = join(repo, 'tooling', name);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content);
+    }
+    return codes(await checkPackage(repo, 'tooling'));
+  }
+
+  it('may export exactly the two shared Vitest entry points', async () => {
+    const both = {
+      './vitest': './src/vitest/config.ts',
+      './vitest-smoke': './src/vitest/smoke-config.ts',
+    };
+    expect(await toolingCodes(both)).not.toContain('bad-exports');
+  });
+
+  it.each([
+    [
+      'an internal module',
+      {
+        './vitest': './src/vitest/config.ts',
+        './vitest-smoke': './src/vitest/smoke-config.ts',
+        './internal': './src/eslint-config.ts',
+      },
+    ],
+    [
+      'a smoke entry pointing at the wrong file',
+      { './vitest': './src/vitest/config.ts', './vitest-smoke': './src/eslint-config.ts' },
+    ],
+    ['a root entry', { '.': './src/eslint-config.ts' }],
+  ])('may not export %s', async (_name, exports) => {
+    expect(await toolingCodes(exports)).toContain('bad-exports');
+  });
+});
+
 describe('the real workspace', () => {
   it('has no policy violations in any package, app, or tooling', async () => {
     const directories = await listWorkspaceDirectories(REPO_ROOT);
