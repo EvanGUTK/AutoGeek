@@ -15,6 +15,7 @@ export {
   ERROR_MESSAGES,
   ErrorCodeSchema,
   coreError,
+  createCoreErrorSchema,
   fromZodError,
   isAbortError,
   toCoreError,

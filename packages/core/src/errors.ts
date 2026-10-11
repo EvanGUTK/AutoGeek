@@ -65,16 +65,27 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   internal: 'An internal error occurred.',
 };
 
-export const CoreErrorSchema = z
-  .strictObject({
-    code: ErrorCodeSchema,
-    message: z.string(),
-    details: JsonValueSchema.optional(),
-  })
-  .refine((error) => error.message === ERROR_MESSAGES[error.code], {
-    message: 'message must be the constant message for its code',
-    path: ['message'],
-  });
+/**
+ * Builds an error schema restricted to `codes` whose `details` must match `details`. The
+ * constant-message invariant is enforced for every code. Strict, so nothing else rides along.
+ */
+export function createCoreErrorSchema<
+  const C extends readonly [ErrorCode, ...ErrorCode[]],
+  D extends z.ZodType<JsonValue>,
+>(codes: C, details: D) {
+  return z
+    .strictObject({
+      code: z.enum(codes),
+      message: z.string(),
+      details: details.optional(),
+    })
+    .refine((error) => error.message === ERROR_MESSAGES[error.code], {
+      message: 'message must be the constant message for its code',
+      path: ['message'],
+    });
+}
+
+export const CoreErrorSchema = createCoreErrorSchema(ERROR_CODES, JsonValueSchema);
 
 export type CoreError = z.infer<typeof CoreErrorSchema>;
 
