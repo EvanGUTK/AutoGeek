@@ -82,6 +82,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `not_found` | Target does not exist (file, run, terminal, credential, approval) |
 | `outside_workspace` | Resolved path escapes the trusted root(s) |
 | `user_declined` | The user declined a native confirmation dialog shown by main (protected path, trust, saved allow rule) |
+| `protected_path` | Hard-denied write to repository-integrity paths (`.git/{HEAD,index,objects}`); no dialog and no override |
 | `untrusted_workspace` | Operation needs a trusted workspace |
 | `conflict` | Stale write or run state conflict; `details.kind` says which (`paths_changed`, `run_active`, a disk change) |
 | `too_large` | Exceeds a size cap |
@@ -102,6 +103,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `agent.*`, `permissions.*` | ag-agent |
 | `auth.*` | ag-auth |
 | `models.*` | ag-providers |
+| `app.*` | ag-foundation |
 
 (Channel classes for a later split of views are in §1.5.)
 
@@ -116,7 +118,7 @@ declares the channels it uses (`docs/ui-spec.md` §6.3). The classes I am workin
 
 | Class | Channels | Why separate |
 |---|---|---|
-| `transcript` | subscribe `agent.event`; `settings.get`; read-only display | Renders model output; must hold no privilege |
+| `transcript` | subscribe `agent.event`; `settings.get`; `app.openExternal` (every call is gated by a native confirmation showing the exact URL); read-only display | Renders model output; no privilege beyond a confirmed link open |
 | `approvals` | subscribe `agent.approvalRequested`/`Resolved`; `permissions.respondApproval`, `listPending` | Small view, structured data only, rendered as inert text |
 | `composer` | `agent.send`, `agent.stop`, `agent.undoRun`, `agent.getRunDiff`, `agent.listRuns`, `agent.replay` | Starts and controls runs |
 | `terminal` | `terminal.*` | Arbitrary execution by design |
@@ -194,24 +196,33 @@ contract version.
 
 ### `workspace.readFile`
 - Input: `{ path: string; maxBytes?: number }`.
-- Output: `{ text: string; encoding: 'utf8'; size: number; mtimeMs: number; truncated: boolean; lineEnding: 'lf' | 'crlf' }`
-  or `{ binary: true; size: number }`. When `size` exceeds main's cap, `truncated` is `true` and the
-  editor opens read-only with the large-file fallback.
+- Output: `{ text: string; encoding: 'utf8'; size: number; mtimeMs: number; version: string; truncated: boolean; lineEnding: 'lf' | 'crlf' }`
+  or `{ binary: true; size: number }`. `version` is an **opaque** token (ag-workspace builds it from a
+  hash of the bytes plus size and mtime); the renderer never parses it. `mtimeMs` is for display
+  only. Default `maxBytes` is 2 MiB; above it `truncated` is `true` and the editor opens read-only
+  with the large-file fallback; the hard cap is 16 MiB (`too_large`). These defaults are ag-workspace's
+  and may be revised.
 - Errors: `not_found`, `outside_workspace`, `user_declined`, `too_large` (hard cap), `untrusted_workspace`.
 - This is a user-driven editor action; main still enforces containment and the sensitive-path
-  rules. For a protected path (`.env`, key files, `.git/config`) main shows a **native confirmation
-  dialog** (built by main from the resolved path; the renderer supplies no "confirmed" flag, since a
-  compromised renderer could spoof one) and the call resolves only after the user answers. Decline →
-  `user_declined`. The call can therefore take arbitrarily long; the editor shows a "waiting for
-  confirmation" state and no timeout. Confirmation is per call. Hardening of the dialog and the
-  race between the answer and the I/O is in §9.4.
+  rules, split into two classes by ag-workspace:
+  - **Confirmable** (`.env*`, key and credential files, `.git/config`, `.git/hooks`; templates such as
+    `.env.example` are read without a dialog): main shows a **native confirmation dialog** (built by
+    main from the resolved path; the renderer supplies no "confirmed" flag, since a compromised
+    renderer could spoof one) and the call resolves only after the user answers. Decline →
+    `user_declined`. The call can therefore take arbitrarily long; the editor shows a "waiting for
+    confirmation" state and no timeout. Confirmation is per call.
+  - **Hard-denied** (writes to `.git/{HEAD,index,objects}`): `protected_path`, no dialog and no
+    override. AutoGeek's own configuration and credential store answer `outside_workspace`, so
+    their existence is not confirmed. The editor explains a `protected_path` result in words and
+    offers no way around it.
+  Hardening of the dialog and the race between the answer and the I/O is in §9.4.
 
 ### `workspace.writeFile`
-- Input: `{ path: string; text: string; expectedMtimeMs?: number }`.
-- Output: `{ mtimeMs: number }`.
-- Errors: `outside_workspace`, `user_declined`, `conflict` (disk changed since `expectedMtimeMs`),
-  `too_large`, `untrusted_workspace`. Protected paths use the same native confirmation as
-  `workspace.readFile`.
+- Input: `{ path: string; text: string; expectedVersion?: string }` (the `version` from the read).
+- Output: `{ version: string; mtimeMs: number }`.
+- Errors: `outside_workspace`, `user_declined`, `protected_path`, `conflict` (disk changed since
+  `expectedVersion`), `too_large`, `untrusted_workspace`. Confirmable paths use the same native
+  confirmation as `workspace.readFile`; hard-denied paths are `protected_path`.
 - Writes are atomic (temp file + rename) in main. The UI offers "overwrite / reload / compare" on
   `conflict`.
 
@@ -250,7 +261,7 @@ Streams are events keyed by `terminalId`.
 - Input: `{ terminalId: string; bytes: number }` — bytes the renderer has finished consuming (written
   into xterm and parsed). Output: `{}`. Errors: `not_found`.
 - Main tracks unacknowledged bytes per terminal, pauses the PTY above a high-water mark and resumes
-  below a low-water mark (marks are ag-workspace's to choose and test). The renderer acks in
+  below a low-water mark (ag-workspace's defaults to test: 256 KiB and 64 KiB). The renderer acks in
   batches (not per chunk) after xterm's write callback fires.
 
 ### Event `terminal.data`
@@ -305,21 +316,26 @@ On every mount:
   what `offered` lists, so seeing that error means the card is out of date and it refreshes from
   `permissions.listPending`.
 
-### 5.3 What the renderer needs from `agent.*` / `permissions.*` that the contract does not yet say
+### 5.3 Amendments the renderer needs to the agent contract (accepted by ag-agent, pending the chief's edit)
 
-Requests, not assumptions (listed in §9 with the others):
+ag-agent accepted these and sent them to the chief as an amendment to `docs/agent-contract.md`. They
+touch core types, so this document treats them as pending until that file changes:
 
-1. `agent.listRuns` entries carry `firstSeq` (the oldest retained event) so a mount can replay from
-   it.
-2. After `agent.undoRun` succeeds, `agent.listRuns` and `agent.replay` do not return the undone runs
-   (or mark them `undone`), otherwise a reload rebuilds a transcript that no longer exists.
-3. Session-grant identity includes `env` and the exec `class`, is keyed by the workspace-root
-   realpath, and is cleared on root change and on `setTrust(false)`.
-4. A redacted `env` value makes the action elevated (no `session`), and the wire form marks which
-   values are redacted.
-5. The display-safe string function (`docs/ui-spec.md` §5.2) is exported by `core` and used by main
-   for the text of native dialogs (`addRule`, `setTrust`, protected-path confirms) as well.
-6. A setting that holds the user-adjustable run budgets (§2), read by main when a run starts.
+1. `agent.listRuns` entries gain `firstSeq` (the oldest retained event) and `undone: boolean`.
+   `agent.undoRun` marks the undone runs. `agent.replay` still returns their events, since they stay
+   auditable, and the UI hides undone runs from the transcript by the flag, so a reload does not
+   resurrect a transcript that no longer exists.
+2. The session-grant key includes the canonical `env` and the exec `class`, is keyed by the
+   workspace-root realpath, and is cleared on root change and on `setTrust(false)`. A policy rule
+   of kind `argv`, `argv_prefix` or `shell` never matches a request with a non-empty `env` (rules
+   carry no env in v1), so a pinned `npm test` rule cannot be reused with `NODE_OPTIONS`.
+3. Redaction is structural: `env?: Record<string, { kind: 'plain'; value: string } | { kind: 'redacted' }>`.
+   Any redacted value makes the action elevated (no `session`), and the card shows which keys are
+   redacted.
+4. `core` exports the display-safe string function (`docs/ui-spec.md` §8), which main also uses for
+   the text of native dialogs (`addRule`, `setTrust`, protected-path confirms, `app.openExternal`).
+5. Budgets come from the `agent.budgets` setting (§2), read by main at run start through an injected
+   `budgetsFor()`. The native confirmation for lifting a cap lives in the `settings.set` handler.
 
 ## 6. `auth.*` (owner: ag-auth)
 
@@ -377,9 +393,9 @@ Renderer behavior and constraints:
   the live per-turn count from `agent.event` usage. Cap *enforcement* is the agent budget's job; the
   UI only shows state.
 
-## 7. `models.*` (owner: ag-providers)
+## 7. `models.*` (owner: ag-providers) and `app.*` (owner: ag-foundation)
 
-### `models.list`
+### 7.0 `models.list`
 - Input: `{ credentialId: string }`.
 - Output: `ModelInfo[]`, core's schema from `docs/model-contract.md` §5 (`providerId`, `id`,
   `displayName`, `contextWindow: number | null`, `maxOutputTokens: number | null`,
@@ -393,6 +409,24 @@ Renderer behavior and constraints:
   that is no longer selected is ignored by the UI; there is no cancel channel unless ag-providers
   wants one.
 - The picker renders `unknown` honestly (`docs/ui-spec.md` §4.1): never as "no", never as "yes".
+
+### 7.1 `app.openExternal`
+Proposed shape, for the chief to relay to ag-foundation's `app.*` domain.
+
+- Input: `{ url: string }` (≤ 8 KiB).
+- Output: `{ opened: true }`.
+- Errors: `invalid_input` (not a parseable URL, a scheme other than `http:`/`https:`, embedded
+  credentials `user:pass@`, or over the size bound), `user_declined`.
+- Main parses with the WHATWG URL parser and normalizes. It rejects every scheme but `http` and
+  `https`. It then **always** shows a native confirmation that displays the exact normalized URL
+  through the display-safe function (`docs/ui-spec.md` §8), with the host shown separately and
+  punycode visible. There is no "remember this host" in v1 and no renderer-supplied "trusted source"
+  flag; the renderer's link text is never shown in the dialog. Only after the user accepts does main
+  open that exact string in the default browser.
+- The dialog's `defaultId` and `cancelId` are the decline button. Dialogs are serialized, and a
+  repeat for the same URL right after a decline is auto-declined for a short time.
+- The renderer shows the real URL next to any link text (`docs/ui-spec.md` §6.1.4), so what the user
+  sees in the dialog is what they saw in the transcript.
 
 ## 8. Trust boundaries: what the IPC allows, and the residual risk
 
@@ -443,18 +477,26 @@ as such.
    included), uses the `{ domain, kind }` projection plus the owner's constant message; vendor
    `detail` and `requestId` stay in main's logs. `docs/model-contract.md` now says `detail` is logs
    only. Still to confirm with ag-foundation: that `domain_error` is the shared `code`.
-4. **Native confirmations** (ag-workspace for files; ag-foundation/ag-agent for trust and rules):
+4. **Native confirmations** (ag-workspace for files; ag-foundation/ag-agent for trust, rules and links).
+   The dialogs live in `apps/desktop` behind an injected port
+   (`ProtectedAccessConfirmer.confirm({ realpath, category, op }, signal)` for files), and `workspace`
+   does the following around it (agreed with ag-workspace):
    - the dialog's `defaultId` and `cancelId` are both the decline button, so a stray Enter cannot
      confirm;
-   - dialogs are serialized, and a repeat for the same path is auto-declined for a short period after
-     a decline, so a compromised renderer cannot spam until the user clicks yes;
+   - requests are serialized, and a repeat for the same path is auto-declined for a short cooldown
+     after a decline, so a compromised renderer cannot spam until the user clicks yes;
    - the target is opened no-follow *before* the dialog and the I/O uses that handle; for writes,
      containment and identity are re-verified after the answer;
    - new-file writes `realpath` the deepest existing ancestor;
    - sensitive-path matching ignores case and Unicode normalization (APFS: `.ENV`, `.Git/config`);
-   - the dialog text goes through the display-safe function (§5.3.5).
-5. **Wire path schema** (ag-foundation with ag-workspace): reject NUL, backslash, empty and `.`
-   segments, `..`, absolute paths and over-long paths at the schema, not only in the handler.
+   - the PTY service refuses `terminal.create` unless the workspace is trusted, as a second check
+     besides the handler;
+   - the dialog text goes through the display-safe function (§5.3.4), and a text that exceeds the
+     dialog bound is refused (`too_long`), never cut.
+5. **Wire path schema** (a `core` export, decided by the chief). The schema rejects NUL, backslash,
+   empty and `.` segments, `..`, absolute paths and over-long paths. It is deliberately stricter than
+   the tool-path rules. ag-workspace keeps the case table in `docs/workspace-path-cases.md` so the
+   schema tests can use it without `workspace` importing `core`.
 6. **Theme bootstrap** (ag-foundation to confirm feasibility). Main passes the validated initial
    theme through `webPreferences.additionalArguments`; the sandboxed preload reads it from
    `process.argv`, re-validates it, and exposes a synchronous bridge value (not a channel), so
@@ -465,15 +507,15 @@ as such.
 8. **Provider catalog** (decided by the chief): static data in `core`
    (`packages/core/src/providers/catalog.ts`), owned by ag-providers, `authKinds` reviewed by
    ag-auth. The UI offers exactly the kinds and `acquisition` it lists.
-9. **External links.** A main-mediated open: the renderer sends a URL, main validates the scheme
-   (`https:` only) against an allowlist or a native confirmation and opens it. Name and shape are the
-   chief's call; none exists yet (`docs/ui-spec.md` §6.1.4).
-10. **Display-safe string function in `core`** (ag-foundation): one implementation used by the
-    renderer and by main's native dialogs (`docs/ui-spec.md` §5.2).
+9. **External links** (decided by the chief): `app.openExternal`, shape in §7.1, owned by
+   ag-foundation's `app.*` domain.
+10. **Display-safe string function** (decided by the chief): a pure `core` export specified in
+    `docs/ui-spec.md` §8 (ag-ui specifies, ag-foundation implements, ag-reviewer reviews).
 11. **`auth.getUsage` shape** (ag-auth): align with D-004 and the model contract:
     `cacheReadTokens`, `cacheWriteTokens` and `reasoningTokens` instead of `cachedTokens`.
 12. **Per-root settings** (this document, §2): `agent.selection` is keyed by workspace root, per
     `ARCHITECTURE.md` §6.
-13. **Terminal water marks and the large-file `maxBytes` default** (ag-workspace): chosen and tested
-    there; the renderer takes them as given.
-14. **D-010 isolation proposal** (joint with ag-foundation, before M3): §1.5 is my input.
+13. **Terminal water marks and file size defaults** (ag-workspace): 256/64 KiB and 2 MiB default /
+    16 MiB hard cap, to be tested and possibly revised there; the renderer takes them as given.
+14. **D-010 isolation proposal** (joint with ag-foundation): starts with M2, decided before M3. §1.5 is
+    my input.
