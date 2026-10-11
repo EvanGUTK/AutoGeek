@@ -1,6 +1,13 @@
 // Public surface of @autogeek/providers.
 export { createAnthropicProvider } from './adapters/anthropic/provider.ts';
 export type { AnthropicProviderOptions } from './adapters/anthropic/provider.ts';
+export {
+  createLlamaCppProvider,
+  createLmStudioProvider,
+  createOpenAICompatibleProvider,
+  createOpenRouterProvider,
+} from './adapters/chat/providers.ts';
+export type { ChatProviderOptions } from './adapters/chat/provider.ts';
 export { createGeminiProvider } from './adapters/gemini/provider.ts';
 export type { GeminiProviderOptions } from './adapters/gemini/provider.ts';
 export { createOpenAIProvider } from './adapters/openai/provider.ts';

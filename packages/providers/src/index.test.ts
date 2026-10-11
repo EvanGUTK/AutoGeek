@@ -9,7 +9,11 @@ describe('@autogeek/providers', () => {
       'NOOP_LOGGER',
       'createAnthropicProvider',
       'createGeminiProvider',
+      'createLlamaCppProvider',
+      'createLmStudioProvider',
+      'createOpenAICompatibleProvider',
       'createOpenAIProvider',
+      'createOpenRouterProvider',
       'createTransportDeps',
     ]);
   });
