@@ -8,7 +8,9 @@ export interface EslintConfigOptions {
   readonly tsconfigRootDir: string;
 }
 
-const TEST_RUNNER_CALLEES = '/^(describe|it|test|suite)$/';
+// Matched on the rightmost property of ANY member chain, not on the callee name, so aliased
+// imports, extended tests and chained modifiers (`it.concurrent.skip`) cannot dodge it. Runtime
+// skips are also caught after the fact by the FailOnSkippedReporter in the shared Vitest config.
 const DISABLED_TEST_MODIFIERS = '/^(skip|only|todo|skipIf|runIf|fails)$/';
 
 /**
@@ -68,7 +70,12 @@ export function createEslintConfig(options: EslintConfigOptions): Linter.Config[
               'Chained type assertions defeat the type system. Validate with zod or narrow properly.',
           },
           {
-            selector: `MemberExpression[object.name=${TEST_RUNNER_CALLEES}][property.name=${DISABLED_TEST_MODIFIERS}]`,
+            selector: `MemberExpression[computed=false][property.name=${DISABLED_TEST_MODIFIERS}]`,
+            message:
+              'Skipped, focused, or todo tests are not allowed. Write the test or delete it.',
+          },
+          {
+            selector: `MemberExpression[computed=true][property.value=${DISABLED_TEST_MODIFIERS}]`,
             message:
               'Skipped, focused, or todo tests are not allowed. Write the test or delete it.',
           },
