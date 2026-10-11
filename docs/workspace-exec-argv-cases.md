@@ -210,18 +210,27 @@ independent guard confirms it is a single harness call over a harmless vocabular
    non-ASCII, leading `=`, `$`, glob characters, which are an explicit list in the test). The
    direction "parser said null, the tokenizer says a pure multi-command or compound form" passes
    trivially.
-3. **Accepted direction (execution only behind the guard).** For every candidate where
-   `simpleArgvOf` returns non-null `argv`, first the candidate must match the **independent guard**,
-   a regular language written separately from the parser:
-   `^[ \t]*<H>([ \t]+(<unquoted>|'<sq>'|"<dq>")+)*[ \t]*$`, where `<H>` is the harness's absolute
-   path (a fixed literal, no regex metacharacters, created as a random directory name of letters and
-   digits), `<unquoted>` is `[A-Za-z0-9_@%+:,./-]+` (note: no `=` first, no `$`, no backslash),
-   `<sq>` is `[A-Za-z0-9 _@%+=:,./-]*` and `<dq>` the same set. The guard accepts no `;`, `&`, `|`,
-   `<`, `>`, `(`, `)`, `{`, `}`, backtick, `$`, backslash, newline, or any non-ASCII character.
-   - **If the parser accepted a string the guard rejects, the test FAILS WITHOUT EXECUTING.** This is
-     how a buggy parser that accepts `a; b`, `$(x)`, or `f(){ f|f& }` is caught: by the guard, not by
-     running the payload.
-   - Strings that pass both are single harness calls with vocabulary arguments. Only these run.
+3. **Accepted direction: two separate checks (reviewer G1).** Free-form generation produces strings
+   the parser CORRECTLY accepts but that do not start with the harness (`git status`, `make test`).
+   Those must not fail the test. So the guard is split:
+   - **(3a) Parser-bug check, no execution.** For every accepted candidate, assert it contains NO
+     unsafe character or construct: `;`, `&`, `|`, `<`, `>`, `(`, `)`, `{`, `}`, backtick, `$`,
+     backslash, newline or any control character, any non-ASCII character, a word starting with `=`,
+     or an unquoted glob/tilde/history/comment character. An accepted candidate with any of these
+     FAILS the test immediately and is never executed (this is where a buggy parser accepting `a; b`,
+     `$(x)` or `f(){ f|f& }` is caught).
+   - **(3b) Execution gate.** An accepted candidate is executed ONLY IF its first word is exactly the
+     harness path `<H>` and the whole string matches the independent regular language
+     `^[ \t]*<H>([ \t]+(<unquoted>|'<sq>'|"<dq>")+)*[ \t]*$`, with `<unquoted>` =
+     `[A-Za-z0-9_@%+:,./-]+`, and `<sq>`, `<dq>` = `[A-Za-z0-9 _@%+=:,./-]*`. Any other accepted
+     candidate (first word not `<H>`) is NOT executed: its argv is compared against the reference
+     tokenizer's argv instead.
+   - `<H>` is matched **literally** (string prefix comparison plus escaping, never interpolated into
+     the regex unescaped), and at setup the test asserts the full temp path matches
+     `^[A-Za-z0-9/_-]+$` (reviewer G2), so it contains no metacharacter of any kind.
+   - **Generation mix:** the generator produces plenty of `<H> ...` candidates (the harness path
+     followed by adversarial and benign argument text) and the test asserts a **minimum executed
+     count** (at least 1,000 of the 5,000 cases), so the executing path cannot silently go unused.
 4. **Containment of the strings that do run** (defense in depth; they are harmless by construction):
    - No function definition, `(`, `)`, `{`, `}` or `$` can occur in an executed string (the guard
      forbids them), so no recursion or shadowing construct is reachable.
