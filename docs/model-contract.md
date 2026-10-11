@@ -19,9 +19,14 @@ them change the core shapes.
 
 ```ts
 // Opaque per-adapter data. Only the adapter whose providerId matches `origin.providerId` may read
-// `data`. Every other component treats it as an opaque blob that it stores and replays. Adapters
-// DROP it (and, for reasoning parts, drop the whole part) when the origin doesn't match the
-// request's provider+model. The JSON must be serializable because checkpoints persist it.
+// `data`. Every other component treats it as an opaque blob that it stores and replays. ORIGIN
+// MATCHING IS ADAPTER-DEFINED: each adapter documents whether it matches on provider or on
+// provider+model, per its vendor's replay rules (e.g. Anthropic keeps every Anthropic-origin block
+// across a Claude→Claude model switch because the API itself ignores unreadable ones, and removing
+// blocks from the middle of history would be an edit; Gemini/OpenAI may match provider+model).
+// Parts whose origin the adapter rejects are dropped (for reasoning, the whole part), and the
+// choice must never turn into a mid-history edit that the vendor treats as invalidating.
+// The JSON must be serializable because checkpoints persist it.
 const ProviderMetadata = z.object({
   origin: z.object({ providerId: z.string().min(1), modelId: z.string().min(1) }),
   data: z.json(),                       // zod 4 JSON value; never `unknown` to avoid non-serializable blobs
