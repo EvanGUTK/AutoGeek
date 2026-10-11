@@ -2,6 +2,7 @@ import { access, readdir, readFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import ts from 'typescript';
 import { z } from 'zod';
+import type { PackageName } from './dependency-rules.ts';
 
 export type PackageViolationCode =
   | 'not-a-package'
@@ -11,6 +12,12 @@ export type PackageViolationCode =
   | 'bad-script'
   | 'missing-tsconfig'
   | 'tsconfig-not-extending-base'
+  | 'missing-environment'
+  | 'bad-environment'
+  | 'wrong-environment'
+  | 'environment-mismatch'
+  | 'tests-in-product-config'
+  | 'test-config-gap'
   | 'weak-compiler-option'
   | 'missing-vitest-config'
   | 'vitest-config-bypass'
@@ -26,6 +33,7 @@ export interface PackageViolation {
 const ManifestSchema = z.object({
   name: z.string().optional(),
   private: z.boolean().optional(),
+  autogeek: z.looseObject({ environment: z.unknown().optional() }).optional(),
   exports: z.json().optional(),
   scripts: z.record(z.string(), z.string()).optional(),
 });
@@ -61,6 +69,49 @@ const STRICT_FAMILY = [
   'useUnknownInCatchVariables',
   'alwaysStrict',
 ] as const;
+
+export const ENVIRONMENTS = ['neutral', 'node', 'dom'] as const;
+export type Environment = (typeof ENVIRONMENTS)[number];
+
+/**
+ * Which runtime each known package targets. `core` is imported by main AND the untrusted
+ * renderer, so it is neutral; `ui-kit` is renderer-only. A package missing from this table (a new
+ * one) cannot compile until it has an entry, because the type is exhaustive over PackageName.
+ */
+export const REQUIRED_ENVIRONMENTS: Readonly<Record<PackageName | 'tooling', Environment>> = {
+  core: 'neutral',
+  'ui-kit': 'dom',
+  auth: 'node',
+  providers: 'node',
+  agent: 'node',
+  tools: 'node',
+  mcp: 'node',
+  workspace: 'node',
+  permissions: 'node',
+  tooling: 'node',
+};
+
+interface CompilerExpectation {
+  readonly lib: readonly string[];
+  readonly types: readonly string[];
+}
+
+/**
+ * Product compiler environment per runtime. `neutral` is ES plus the web-standard APIs both Node
+ * and browsers provide (AbortSignal, URL, ...) via the WebWorker lib, with no Node and no DOM.
+ *
+ * Known gap: the WebWorker lib also declares worker-only globals such as `self`,
+ * `importScripts` and `postMessage`, which exist in neither Node main nor the renderer window.
+ * TypeScript has no narrower "web platform" lib, so a stray `self.` in neutral code is not
+ * caught by the compiler. Code review and the neutral package's own tests are the backstop.
+ */
+const PRODUCT_ENVIRONMENT: Readonly<Record<Environment, CompilerExpectation>> = {
+  neutral: { lib: ['lib.es2023.d.ts', 'lib.webworker.d.ts'], types: [] },
+  node: { lib: ['lib.es2023.d.ts'], types: ['node'] },
+  dom: { lib: ['lib.es2023.d.ts', 'lib.dom.d.ts', 'lib.dom.iterable.d.ts'], types: [] },
+};
+
+const TYPECHECK_SCRIPT = 'tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json';
 
 const FORBIDDEN_FILES = /^(vitest\.(workspace|projects)\..+|eslint\.config\..+|\.eslintrc.*)$/;
 
@@ -112,11 +163,11 @@ function checkScripts(dir: string, manifest: Manifest): PackageViolation[] {
   const test = scripts['test'];
   if (typecheck === undefined) {
     violations.push({ dir, code: 'missing-script', detail: 'no typecheck script' });
-  } else if (!/(^|\s)tsc(\s|$)/.test(typecheck) || !typecheck.includes('--noEmit')) {
+  } else if (typecheck !== TYPECHECK_SCRIPT) {
     violations.push({
       dir,
       code: 'bad-script',
-      detail: `typecheck must run tsc --noEmit: ${typecheck}`,
+      detail: `typecheck must be exactly "${TYPECHECK_SCRIPT}": ${typecheck}`,
     });
   }
   if (test === undefined) {
@@ -133,47 +184,200 @@ function checkScripts(dir: string, manifest: Manifest): PackageViolation[] {
   return violations;
 }
 
-function checkTsconfig(root: string, dir: string): PackageViolation[] {
-  const configPath = join(root, dir, 'tsconfig.json');
+interface LoadedTsconfig {
+  readonly parsed: ts.ParsedCommandLine;
+  readonly extendsField: unknown;
+}
+
+function loadTsconfig(root: string, dir: string, name: string): LoadedTsconfig | undefined {
+  const configPath = join(root, dir, name);
   const read = ts.readConfigFile(configPath, (path) => ts.sys.readFile(path));
   if (read.error !== undefined) {
-    return [{ dir, code: 'missing-tsconfig', detail: 'tsconfig.json is missing or unreadable' }];
+    return undefined;
   }
-  const extendsField = TsconfigSchema.parse(read.config).extends;
-  const base = resolve(root, 'tsconfig.base.json');
-  if (typeof extendsField !== 'string' || resolve(root, dir, extendsField) !== base) {
-    return [
-      {
-        dir,
-        code: 'tsconfig-not-extending-base',
-        detail: 'tsconfig.json must extend the root tsconfig.base.json',
-      },
-    ];
-  }
-  const parsed = ts.parseJsonConfigFileContent(
-    read.config,
-    ts.sys,
-    join(root, dir),
-    undefined,
-    configPath,
-  );
-  const options = parsed.options;
+  return {
+    parsed: ts.parseJsonConfigFileContent(
+      read.config,
+      ts.sys,
+      join(root, dir),
+      undefined,
+      configPath,
+    ),
+    extendsField: TsconfigSchema.parse(read.config).extends,
+  };
+}
+
+const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
+
+/** Every strictness flag must survive in the EFFECTIVE config of `name`. */
+function checkStrictness(
+  dir: string,
+  name: string,
+  options: ts.CompilerOptions,
+): PackageViolation[] {
   const violations: PackageViolation[] = [];
   for (const flag of REQUIRED_FLAGS) {
     if (options[flag] !== true) {
       violations.push({
         dir,
         code: 'weak-compiler-option',
-        detail: `${flag} must be true in the effective config`,
+        detail: `${name}: ${flag} must be true in the effective config`,
       });
     }
   }
   for (const flag of STRICT_FAMILY) {
     if ((options[flag] ?? options.strict) !== true) {
-      violations.push({ dir, code: 'weak-compiler-option', detail: `${flag} is effectively off` });
+      violations.push({
+        dir,
+        code: 'weak-compiler-option',
+        detail: `${name}: ${flag} is effectively off`,
+      });
     }
   }
   return violations;
+}
+
+function checkProductTsconfig(
+  root: string,
+  dir: string,
+  environment: Environment | undefined,
+): { violations: PackageViolation[]; options?: ts.CompilerOptions } {
+  const loaded = loadTsconfig(root, dir, 'tsconfig.json');
+  if (loaded === undefined) {
+    return {
+      violations: [
+        { dir, code: 'missing-tsconfig', detail: 'tsconfig.json is missing or unreadable' },
+      ],
+    };
+  }
+  const base = resolve(root, 'tsconfig.base.json');
+  if (typeof loaded.extendsField !== 'string' || resolve(root, dir, loaded.extendsField) !== base) {
+    return {
+      violations: [
+        {
+          dir,
+          code: 'tsconfig-not-extending-base',
+          detail: 'tsconfig.json must extend the root tsconfig.base.json',
+        },
+      ],
+    };
+  }
+  const { options, fileNames } = loaded.parsed;
+  const violations = checkStrictness(dir, 'tsconfig.json', options);
+  if (environment !== undefined) {
+    const expected = PRODUCT_ENVIRONMENT[environment];
+    if (
+      !sameSet(options.lib ?? [], expected.lib) ||
+      !sameSet(options.types ?? [], expected.types)
+    ) {
+      violations.push({
+        dir,
+        code: 'environment-mismatch',
+        detail:
+          `tsconfig.json does not match environment "${environment}": ` +
+          `lib must be [${expected.lib.join(', ')}] and types [${expected.types.join(', ')}]`,
+      });
+    }
+  }
+  if (fileNames.some((file) => /\.(test|spec)\.[cm]?tsx?$/.test(file))) {
+    violations.push({
+      dir,
+      code: 'tests-in-product-config',
+      detail: 'tsconfig.json must exclude test files; they belong to tsconfig.test.json',
+    });
+  }
+  return { violations, options };
+}
+
+async function listTestFiles(root: string, dir: string): Promise<string[]> {
+  const entries = await readdir(join(root, dir, 'src'), { recursive: true });
+  return entries
+    .filter((entry) => /\.(test|spec)\.[cm]?tsx?$/.test(entry))
+    .map((entry) => resolve(root, dir, 'src', entry));
+}
+
+async function checkTestTsconfig(
+  root: string,
+  dir: string,
+  product: ts.CompilerOptions | undefined,
+): Promise<PackageViolation[]> {
+  const loaded = loadTsconfig(root, dir, 'tsconfig.test.json');
+  if (loaded === undefined) {
+    return [
+      { dir, code: 'missing-tsconfig', detail: 'tsconfig.test.json is missing or unreadable' },
+    ];
+  }
+  const gap = (detail: string): PackageViolation => ({ dir, code: 'test-config-gap', detail });
+  if (
+    typeof loaded.extendsField !== 'string' ||
+    resolve(root, dir, loaded.extendsField) !== resolve(root, dir, 'tsconfig.json')
+  ) {
+    return [gap('tsconfig.test.json must extend ./tsconfig.json')];
+  }
+  const { options, fileNames } = loaded.parsed;
+  const violations = checkStrictness(dir, 'tsconfig.test.json', options);
+  if (!sameSet(options.types ?? [], ['node'])) {
+    violations.push(gap('tsconfig.test.json must set types to ["node"] for tests and config'));
+  }
+  if (product !== undefined && !sameSet(options.lib ?? [], product.lib ?? [])) {
+    violations.push(gap('tsconfig.test.json must keep the product lib'));
+  }
+  const covered = new Set(fileNames.map((file) => resolve(file)));
+  const required = [resolve(root, dir, 'vitest.config.ts'), ...(await listTestFiles(root, dir))];
+  for (const file of required) {
+    if (!covered.has(file)) {
+      violations.push(
+        gap(`tsconfig.test.json does not include ${file.slice(resolve(root, dir).length + 1)}`),
+      );
+    }
+  }
+  return violations;
+}
+
+type EnvironmentCheck =
+  | { readonly violations: PackageViolation[]; readonly environment: undefined }
+  | { readonly violations: PackageViolation[]; readonly environment: Environment };
+
+/** Reads the declared environment and checks it against the per-package requirement table. */
+function checkEnvironment(dir: string, manifest: Manifest): EnvironmentCheck {
+  const declared = manifest.autogeek?.environment;
+  if (declared === undefined) {
+    return {
+      environment: undefined,
+      violations: [
+        { dir, code: 'missing-environment', detail: 'package.json needs autogeek.environment' },
+      ],
+    };
+  }
+  const parsed = z.enum(ENVIRONMENTS).safeParse(declared);
+  if (!parsed.success) {
+    return {
+      environment: undefined,
+      violations: [
+        {
+          dir,
+          code: 'bad-environment',
+          detail: `autogeek.environment must be one of ${ENVIRONMENTS.join(', ')}`,
+        },
+      ],
+    };
+  }
+  const name = basename(dir);
+  const required = (REQUIRED_ENVIRONMENTS as Readonly<Record<string, Environment | undefined>>)[
+    name
+  ];
+  const violations: PackageViolation[] =
+    required !== undefined && required !== parsed.data
+      ? [
+          {
+            dir,
+            code: 'wrong-environment',
+            detail: `${name} must be "${required}", not "${parsed.data}"`,
+          },
+        ]
+      : [];
+  return { environment: parsed.data, violations };
 }
 
 async function checkVitest(root: string, dir: string): Promise<PackageViolation[]> {
@@ -234,10 +438,14 @@ export async function checkPackage(root: string, dir: string): Promise<PackageVi
   if (manifest === undefined) {
     return [{ dir, code: 'not-a-package', detail: `${dir} has no package.json` }];
   }
+  const environment = checkEnvironment(dir, manifest);
+  const product = checkProductTsconfig(root, dir, environment.environment);
   return [
     ...checkIdentity(dir, manifest),
     ...checkScripts(dir, manifest),
-    ...checkTsconfig(root, dir),
+    ...environment.violations,
+    ...product.violations,
+    ...(await checkTestTsconfig(root, dir, product.options)),
     ...(await checkVitest(root, dir)),
     ...(await checkForbiddenFiles(root, dir)),
     ...(await checkSurface(root, dir, manifest)),

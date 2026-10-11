@@ -2,11 +2,14 @@
   "name": "@autogeek/tooling",
   "private": true,
   "type": "module",
+  "autogeek": {
+    "environment": "node"
+  },
   "exports": {
     "./vitest": "./src/vitest/config.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run"
   },
   "devDependencies": {

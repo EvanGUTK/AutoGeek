@@ -40,7 +40,7 @@ beforeAll(async () => {
   );
   await writeFile(
     join(sandbox, 'eslint.config.js'),
-    `import { createEslintConfig } from ${JSON.stringify(POLICY_MODULE)};\nexport default createEslintConfig({ tsconfigRootDir: ${JSON.stringify(sandbox)} });\n`,
+    `import { createEslintConfig } from ${JSON.stringify(POLICY_MODULE)};\nexport default createEslintConfig({ tsconfigRootDir: ${JSON.stringify(sandbox)}, projects: ['./tsconfig.json', './packages/*/tsconfig*.json', './modules/*/tsconfig*.json'] });\n`,
   );
   // A package that tries to opt out of the root policy with its own (empty) flat config.
   await writeFile(
@@ -167,5 +167,58 @@ describe('skipped-test lint is scoped to test files (real CLI)', () => {
     );
     expect(outcome.exitCode).not.toBe(0);
     expect(outcome.output).toContain('Skipped, focused, or todo tests are not allowed');
+  });
+});
+
+describe('packages with a product tsconfig and a separate test tsconfig (real CLI)', () => {
+  beforeAll(async () => {
+    // Outside the sandbox root tsconfig's include, so only the package's own configs can cover it.
+    const pkg = join(sandbox, 'modules', 'split');
+    await mkdir(join(pkg, 'src'), { recursive: true });
+    await writeFile(
+      join(pkg, 'tsconfig.json'),
+      JSON.stringify({
+        extends: '../../tsconfig.json',
+        include: ['src'],
+        exclude: ['src/**/*.test.ts'],
+      }),
+    );
+    await writeFile(
+      join(pkg, 'tsconfig.test.json'),
+      JSON.stringify({ extends: './tsconfig.json', include: ['src'], exclude: [] }),
+    );
+    await writeFile(join(pkg, 'src', 'index.ts'), 'export const value = 1;\n');
+    await writeFile(
+      join(pkg, 'src', 'index.test.ts'),
+      "declare const it: (name: string, fn: () => void) => void;\nit('works', () => undefined);\n",
+    );
+  });
+
+  it('type-aware lints both product and test files without "not found by project" errors', async () => {
+    const outcome = await runEslint([
+      '--config',
+      'eslint.config.js',
+      'modules/split',
+      '--max-warnings',
+      '0',
+    ]);
+    expect(outcome.output).not.toMatch(
+      /parserOptions\.project|was not found by the project service|Parsing error/,
+    );
+    expect(outcome.exitCode).toBe(0);
+  });
+
+  it('still applies the type-aware rules to the test file', async () => {
+    await writeFile(
+      join(sandbox, 'modules', 'split', 'src', 'bad.test.ts'),
+      'export const value: any = JSON.parse("1");\n',
+    );
+    const outcome = await runEslint([
+      '--config',
+      'eslint.config.js',
+      'modules/split/src/bad.test.ts',
+    ]);
+    expect(outcome.exitCode).not.toBe(0);
+    expect(outcome.output).toContain('@typescript-eslint/no-explicit-any');
   });
 });

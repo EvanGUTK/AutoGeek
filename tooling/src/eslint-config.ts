@@ -4,8 +4,15 @@ import { defineConfig } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
 export interface EslintConfigOptions {
-  /** Directory that contains the tsconfig.json files type-aware rules resolve against. */
+  /** Directory that the `projects` globs are relative to. */
   readonly tsconfigRootDir: string;
+  /**
+   * tsconfig files (globs) that type-aware rules resolve against. Every linted TypeScript file
+   * must belong to one of them. Packages have a product tsconfig.json that EXCLUDES tests and a
+   * tsconfig.test.json that includes them, so the nearest-tsconfig lookup of `projectService`
+   * is not enough. Defaults to the root tsconfig.json.
+   */
+  readonly projects?: readonly string[];
 }
 
 // Any assertion whose operand is itself an assertion (`as unknown as T`, `as never as T`,
@@ -65,7 +72,7 @@ export function createEslintConfig(options: EslintConfigOptions): Linter.Config[
     {
       languageOptions: {
         parserOptions: {
-          projectService: true,
+          project: [...(options.projects ?? ['./tsconfig.json'])],
           tsconfigRootDir: options.tsconfigRootDir,
         },
       },
