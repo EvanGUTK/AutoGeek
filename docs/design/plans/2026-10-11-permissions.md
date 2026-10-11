@@ -425,7 +425,9 @@ alongside.
 - [ ] **Step 0: Core constant (chief-granted, relayed from ag-ui).**
   - Create `packages/core/src/permissions/notices.ts` (its own file, plus one export line in
     core's `index.ts`) with
-    `export const PERSISTENT_EXEC_RULE_NOTICE = 'This rule keeps applying even if scripts, Makefiles or package.json change' as const;`.
+    `export const PERSISTENT_EXEC_RULE_NOTICE = 'This rule keeps applying even if the files this command runs change (scripts, Makefiles, package.json, lockfiles, hooks)' as const;`
+    (the chief's final wording, from ag-reviewer's suggestion). This plan line and the core
+    file are the only places the string is written out.
   - Its test pins the exact string.
   - Commit `feat(core): add the persistent exec-rule notice constant`. The body cites the
     chief's grant and says ag-ui consumes the same constant.
