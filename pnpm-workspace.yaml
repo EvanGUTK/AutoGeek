@@ -19,4 +19,5 @@ catalog:
 # Supply-chain cooldown (ARCHITECTURE.md §8.8). Strict mode stops pnpm from silently adding
 # too-young releases to minimumReleaseAgeExclude. Any exclusion needs a DECISIONS entry and the
 # chief's approval (LEARNINGS L-002).
+minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true
