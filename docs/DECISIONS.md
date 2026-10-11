@@ -16,3 +16,20 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
 - **Decision:** Ship API keys first, then OAuth only for providers whose terms permit it. The chief
   verifies and records current terms here before any subscription-OAuth adapter is built.
 - **Consequences:** `AuthMethod` stays an interface so adding one later is localized.
+
+## D-003 Providers use raw `fetch` + our own parsers, no vendor SDKs
+- **Status:** accepted (chief, 2026-10-11; proposed by ag-providers)
+- **Context:** Vendor SDKs bring their own retry/timeout behavior (double-counting with ours) and
+  vendor types we would have to wall off from the agent loop.
+- **Decision:** `@autogeek/providers` owns the HTTP layer: SSE/NDJSON parsers, retry with
+  `Retry-After`, no retry once tool-call bytes were emitted, zod schemas per vendor.
+- **Consequences:** more parsing code to own and test (covered by the shared conformance suite);
+  no vendor SDK in the dependency graph.
+
+## D-004 Core model contract amendments (reasoning, caching, terminal events)
+- **Status:** accepted (chief, 2026-10-11; proposed by ag-providers)
+- **Decision:** `usage` splits `cacheReadTokens`/`cacheWriteTokens` (replaces `cachedTokens`);
+  `reasoning` parts carry `signature?`/`redactedData?` and streams emit `reasoning_done`;
+  `Message.cacheHint?`; streams end with exactly one terminal `done` or `error`, and
+  `stopReason` no longer includes `'error'`.
+- **Consequences:** see ARCHITECTURE.md §5.

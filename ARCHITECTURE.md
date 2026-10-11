@@ -99,16 +99,24 @@ type ContentPart =
   | { type: 'image'; mediaType: string; dataBase64: string }
   | { type: 'tool_call'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; callId: string; output: unknown; isError: boolean }
-  | { type: 'reasoning'; text: string; signature?: string };
-interface Message { role: Role; content: ContentPart[] }
+  // Opaque provider data must round-trip untouched. `redactedData` is set (text empty) for
+  // redacted thinking blocks.
+  | { type: 'reasoning'; text: string; signature?: string; redactedData?: string };
+// `cacheHint` marks a prompt-cache breakpoint after this message; adapters without caching ignore it.
+interface Message { role: Role; content: ContentPart[]; cacheHint?: 'ephemeral' }
 
-// Streaming events from any provider, normalized.
+// Streaming events from any provider, normalized. A stream ends with EXACTLY ONE terminal
+// event: `done` or `error`, never both, never neither (adapters guarantee this, incl. on abort).
 type ModelEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
+  // Emitted once per reasoning block when complete, so signatures/redacted data are not lost.
+  | { type: 'reasoning_done'; text: string; signature?: string; redactedData?: string }
+  // Emitted only when the tool input is fully assembled and parsed; adapters never leak partial JSON.
   | { type: 'tool_call'; id: string; name: string; input: unknown }
-  | { type: 'usage'; inputTokens: number; outputTokens: number; cachedTokens?: number }
-  | { type: 'done'; stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'error' }
+  | { type: 'usage'; inputTokens: number; outputTokens: number;
+      cacheReadTokens?: number; cacheWriteTokens?: number }   // priced differently
+  | { type: 'done'; stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' }
   | { type: 'error'; error: ProviderError };
 
 interface ModelProvider {
