@@ -122,6 +122,14 @@ Nothing else in core is touched.
     allowlisted;
   - fast-check: for any string `k` not in the allowlist, `isBenign(k) === false`.
 - [ ] **Steps 2–4:** run → FAIL, implement, run → PASS.
+- **No-drift test (chief), owned outside core.** core can't import ag-workspace's allowlist,
+  so the test lives in `@autogeek/workspace`, next to the list:
+  - `createAllowlistEnvKeyClassifier(BENIGN_ENV_KEYS)` doesn't throw;
+  - every listed key `isBenign`;
+  - the classifier the workspace exports is the factory's output, not a hand-written one.
+
+  ag-agent asks ag-workspace to add it when the list lands. Before slice 1's second review
+  request, check that it exists.
 - [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`. The body
   cites the chief's grant (edit rights to this file only) and L-005.
 
