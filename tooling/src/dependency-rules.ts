@@ -1,6 +1,6 @@
 import type { ICruiseOptions, IFlattenedRuleSet, IForbiddenRuleType } from 'dependency-cruiser';
 
-const PACKAGE_NAMES = [
+export const PACKAGE_NAMES = [
   'core',
   'auth',
   'providers',
@@ -11,6 +11,9 @@ const PACKAGE_NAMES = [
   'permissions',
   'ui-kit',
 ] as const;
+
+/** Applications under apps/. A new app needs an entry here before it may import anything. */
+export const APP_NAMES = ['desktop'] as const;
 
 export type PackageName = (typeof PACKAGE_NAMES)[number];
 
@@ -48,6 +51,21 @@ export function createDependencyRuleSet(): IFlattenedRuleSet {
   return {
     forbidden: [
       ...PACKAGE_NAMES.map(layerRule),
+      {
+        name: 'unknown-package',
+        comment:
+          'A packages/ directory that is not in the layering matrix may not import anything. Add it to ALLOWED_PACKAGE_DEPENDENCIES first.',
+        severity: 'error',
+        from: { path: '^packages/', pathNot: `^packages/(${PACKAGE_NAMES.join('|')})/` },
+        to: {},
+      },
+      {
+        name: 'unknown-app',
+        comment: 'An apps/ directory that is not in APP_NAMES may not import anything.',
+        severity: 'error',
+        from: { path: '^apps/', pathNot: `^apps/(${APP_NAMES.join('|')})/` },
+        to: {},
+      },
       {
         name: 'no-import-of-apps',
         comment:
