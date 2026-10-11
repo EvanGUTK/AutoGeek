@@ -12,11 +12,12 @@ assumed.
 ## 1. Ground rules
 
 - The renderer is untrusted and holds no secrets (`ARCHITECTURE.md` §3, §8). UI state is
-  display state only; every security decision is made in main.
+  display state only; every security decision is made in main. That is a design posture: while one
+  renderer shows model output and calls privileged channels, its integrity matters. §6 states the
+  hardening and the residual risk (D-010).
 - Model output, tool output, file contents, file names and terminal output are **untrusted
-  strings**. They are rendered as React text nodes. No `dangerouslySetInnerHTML` anywhere in
-  `ui-kit`. Markdown rendering (agent transcript) is a separate sanitized path with its own
-  XSS test corpus and is out of scope here.
+  strings**. They are rendered as React text nodes. No `dangerouslySetInnerHTML` anywhere. The
+  one rich-text path is `SafeMarkdown` (§6.1).
 - Keyboard-first: every interactive element is reachable and operable without a pointer.
   Pointer-only affordances are always duplicates of a keyboard path.
 - WCAG 2.2 AA is the floor: 1.4.3 text contrast (4.5:1, 3:1 for large text), 1.4.11 non-text
@@ -201,9 +202,11 @@ simulation, and asserts roles and aria attributes, not class names.
   the parent form handles it.
 - **`SecretInput`** (API keys, settings): `type="password"`, `autocomplete="off"`,
   `autocapitalize="off"`, `spellcheck="false"`, no reveal toggle, no clipboard-copy affordance, not
-  restored by any persistence layer, and exposes an imperative `clear()` that zeroes the DOM value.
-  The consumer clears it immediately after handing the value to the bridge (brief item 7). Tests
-  assert the value is absent from component state after submit.
+  restored by any persistence layer. It is **uncontrolled**: the key never enters React state, and the
+  consumer reads it once through a ref at submit. `clear()` empties the DOM value and the consumer
+  drops its references right after dispatching to the bridge (brief item 7). A JavaScript string
+  cannot be zeroed, so this limits exposure and does not erase; the vault is in main. Tests assert
+  the value is absent from component state, props and the rendered DOM after submit.
 
 ### 3.3 Dialog
 
@@ -504,7 +507,78 @@ displayed text, not anchors), no images, no HTML. An approval card cannot be res
 - A11y: axe-clean in light and dark; the literal action block is reachable and readable by name;
   announcement text asserted via the live region.
 
-## 6. Open questions for the chief
+## 6. Renderer hardening and role-split readiness (D-010)
+
+"The renderer is untrusted" is a design posture, not a property the renderer has. This section
+states what the UI does to make an attack hard, what it does not defend against, and how the code is
+shaped so privileged capabilities can later move out of the view that renders model output.
+
+### 6.1 Hardening invariants (M0–M2, each with a test)
+
+1. **Strict CSP** set by main on responses (not a `<meta>`): no inline script, no `eval`, no remote
+   origins. Monaco is bundled locally with its workers served from the app origin. The exact policy
+   is ag-foundation's; the UI requirement is an e2e test that an injected inline script and an
+   injected `javascript:` URL do not execute.
+2. **Exactly one rich-text path for untrusted content**: a single `SafeMarkdown` component in
+   `ui-kit`. It parses to an AST and renders React elements from an allowlist of node types. Raw
+   HTML in the source is shown as text, never parsed. It never uses `innerHTML`. Its test suite
+   runs an XSS corpus (script tags, event-handler attributes, `javascript:`/`data:`/`vbscript:`
+   URLs, SVG and MathML payloads, nested and malformed markup, entity tricks, mXSS patterns,
+   CSS `url()` payloads) and asserts on the rendered DOM: no `script`, no `on*` attributes, no
+   dangerous URL schemes, no elements outside the allowlist.
+3. **No `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
+   `eval` or `new Function` anywhere else.** Enforced by lint in the shared tooling package and
+   tested through the real `eslint` CLI with the circumventions that would be tried (spread props
+   carrying the attribute, a ref plus assignment, an alias import), per L-003. A violation fails
+   `pnpm verify`; there is no suppression path.
+4. **External links go through main.** A link is rendered as text with a "copy" action, and the
+   open action asks main to open it after validating the scheme (`https:` only) against an
+   allowlist or a native confirmation. `target="_blank"`, `window.open` and in-renderer navigation
+   are never used (`ARCHITECTURE.md` §8.1). This needs a channel that does not exist yet; it is
+   requested in `docs/ipc-channels.md` §9, not assumed.
+5. **One display-safe string function** for every untrusted string that reaches a human (§5.2):
+   action fields, tool and server names, paths, URLs, env, JSON keys and values, and the text of
+   native dialogs. Native dialogs are built in main, so the function must live in `core` and be
+   imported by both sides (requested in `docs/ipc-channels.md` §9).
+
+### 6.2 Residual risk, stated plainly
+
+Until the isolation work below ships, one renderer both displays model output and can call
+privileged channels (`terminal.*`, `permissions.respondApproval` and `addRule`, `auth.*`,
+`workspace.setTrust`). A renderer compromise, for example a sanitizer bypass in the transcript, would
+therefore give an attacker command execution in the integrated terminal and the ability to approve
+their own requests. The approval guard in §5.3 protects a human from an accidental click; it is no
+defense against script that calls the bridge directly. The invariants in §6.1 reduce the likelihood;
+they do not remove the risk. Per D-010, agent mode does not ship until the chosen isolation is
+implemented or the user explicitly accepts this risk.
+
+### 6.3 Shaped for a later split of `webContents` by role
+
+D-010's gate before M3 candidates are separate views per role (transcript without
+`terminal.*`/`auth.*`/`permissions.*`/`setTrust`; approvals in a small privileged view that renders
+structured data as inert text) or a sandboxed frame for model content. The UI code is written so
+either is a configuration change, not a rewrite:
+
+- **No code assumes one window calls every channel.** The bridge client is created per view with a
+  declared channel set (a typed `ChannelSet`). A feature module imports only the set it needs, and a
+  test fails if a module invokes a channel outside its declared set. The transcript's set contains no
+  privileged channel.
+- **Roles are separately mountable roots**: transcript, approvals, terminal, settings and auth, and
+  workspace chrome each have their own entry component with their own subscriptions. None reaches
+  into another's state.
+- **No shared mutable JS state between roles.** State that more than one role needs (settings,
+  pending approvals, workspace trust) arrives from main as events (`settings.changed`,
+  `agent.approvalRequested`/`Resolved`, `workspace.*`), so a second view stays consistent without
+  access to the first one's memory.
+- **Model content is rendered in one place** (the transcript role, via `SafeMarkdown`), so that role
+  is the one that can be moved into a sandbox.
+- **The approval view takes only structured data** (`ApprovalRequestedPayload`) and renders it as
+  inert text; it never imports `SafeMarkdown`.
+- The D-010 design-gate proposal is a joint ag-foundation and ag-ui deliverable. I will draft the
+  UI half (view split, what each view may call, how focus and keyboard routing work across views)
+  when the chief schedules it; this section is the constraint it must respect.
+
+## 7. Open questions for the chief
 
 The IPC the renderer needs is specified in `docs/ipc-channels.md`, which is where questions 1, 2
 and 4 are tracked. Remaining items, each blocking only the matching implementation step:
