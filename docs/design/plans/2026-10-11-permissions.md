@@ -176,11 +176,29 @@ Nothing else in core is touched.
   request, check that it exists.
 - [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`, then
   `feat(core): add ExecVectorClassifier port` (a separate atomic commit).
-- **Third core change (chief-granted, agreed with ag-workspace):** add `mutatesWorkTree` to
-  core's `Tool` metadata. It's `readonly mutatesWorkTree: boolean`, required unless the chief
-  insists on optional-with-default-false, so no tool can forget it. Doc comment: "true iff
-  running this tool can rewrite tracked files without an fs_write gate check (git work-tree
-  operations)". Commit `feat(core): add mutatesWorkTree to tool metadata`. The body
+- **Third core change (chief-granted, agreed with ag-workspace):** add
+  `readonly mutatesWorkTree: boolean` to core's `Tool` metadata. It's **REQUIRED, with no
+  default** (chief), so no tool can silently opt out.
+
+  The doc comment says:
+  - true iff running the tool can rewrite workspace files without an `fs_write` gate check
+    (git work-tree operations);
+  - a started call clears the root's exec session grants when it settles in any way;
+  - **bridged MCP tools declare `true` by default** (unknown effects, fail closed). Relaxing it
+    for a specific read-only MCP tool is a user-visible, confirmed per-tool setting that ag-mcp
+    designs later. This sentence is what ag-mcp's brief inherits.
+
+  Tests (no `@ts-expect-error`, which is banned):
+  - (1) `expectTypeOf<Pick<Tool<unknown, unknown>, 'mutatesWorkTree'>>().toEqualTypeOf<{ readonly mutatesWorkTree: boolean }>()`,
+    which pins it as required, readonly and boolean;
+  - (2) `omitting mutatesWorkTree fails to compile`: compile an in-memory fixture with the real
+    TypeScript compiler API (`ts.createProgram` against core's tsconfig) that builds a `Tool`
+    without the field, and assert exactly one diagnostic with code 2741 naming
+    `mutatesWorkTree` (L-003: test the real command path).
+
+  This change breaks every existing `Tool` literal. If foundation's stubs or anyone's merged
+  tools exist by then, update them in the same commit, adding the field only, and list them in
+  the body. Commit `feat(core): require mutatesWorkTree in tool metadata`. The body
   cites the chief's grant (edit rights to this file only) and L-005.
 
 ### Task 1: Package scaffold and pure helpers
