@@ -139,10 +139,34 @@ interface Tool<I, O> {
   run(input: I, ctx: ToolContext): Promise<ToolResult<O>>;   // ctx carries signal + gate
 }
 
-interface PermissionGate {
-  check(req: PermissionRequest): Promise<'allow' | 'deny'>;  // may await a human
+// Model-facing result is measurable/truncatable; `structured` is for UI/AgentEvents only.
+interface ToolResult<O> {
+  content: string | Array<TextPart | ImagePart>;   // also the shape of ContentPart tool_result output
+  truncated: boolean;
+  isError: boolean;
+  structured?: O;
 }
+
+// TOOLS call the gate, once per effect, with the precise literal effect (only the tool knows the
+// realpath / sensitive class / command class). The LOOP hard-denies tools outside the mode
+// allowlist before `run` and hands each call a call-scoped gate wrapper that stamps provenance,
+// enforces the mode risk ceiling, and emits permission events. Tools build a PermissionRequestInput
+// (no provenance); only the wrapper produces a full PermissionRequest.
+interface PermissionGate {
+  check(req: PermissionRequestInput, signal: AbortSignal): Promise<PermissionDecision>;
+}
+type PermissionDecision =
+  | { decision: 'allow' }
+  | { decision: 'deny'; reason: 'policy' | 'user' | 'mode' | 'untrusted_workspace' | 'aborted' };
+// PermissionRequestInput = { tool, risk, action, literal } where
+// action = fs_read{path(realpath),sensitive} | fs_write{path,sensitive,op,to?}
+//        | exec{argv,cwd,class} | exec_shell{command,cwd} (always class 'unknown' → ask)
+//        | network{url} | mcp{server,tool,input}; `literal` is tool-built, never model prose.
 ```
+
+Remembered permission rules live ONLY in per-user app data (keyed by workspace-root realpath),
+exact-match only, and are never read from or written to the workspace, so a repository can never
+ship pre-approved actions.
 
 ## 6. Auth model (BYOK)
 

@@ -33,3 +33,14 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
   `Message.cacheHint?`; streams end with exactly one terminal `done` or `error`, and
   `stopReason` no longer includes `'error'`.
 - **Consequences:** see ARCHITECTURE.md §5.
+
+## D-006 Permission gate: tools call it, the loop wraps it (proposed by ag-agent)
+- **Status:** accepted (chief, 2026-10-11)
+- **Decision:** Tools call `ctx.gate.check(req, signal)` once per effect; the loop hard-denies tools
+  outside the mode allowlist and supplies a call-scoped wrapper (provenance, mode risk ceiling,
+  events). Decisions carry a deny reason. `ToolResult.content` is `string | (text|image)[]` plus
+  `truncated`. Remembered rules are stored only in per-user app data, never in the workspace.
+  Shell commands are `exec_shell`, class `unknown`, always ask.
+- **Consequences:** a tool that forgets to call the gate is the main risk; mitigated by a shared
+  tool conformance harness (fake gate asserting `check` precedes any mutation) and loop-side
+  detection of write/exec/network tools completing without a recorded allow.
