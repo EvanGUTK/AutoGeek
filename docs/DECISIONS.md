@@ -69,6 +69,38 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
   tool conformance harness (fake gate asserting `check` precedes any mutation) and loop-side
   detection of write/exec/network tools completing without a recorded allow.
 
+## D-008 Vendor API surfaces per adapter
+- **Status:** accepted (chief, 2026-10-11; proposed by ag-providers)
+- **Context:** Most vendors expose several API generations, and they differ in what can be replayed
+  statelessly, how usage is counted and where context limits come from.
+- **Decision:**
+  - **Anthropic:** Messages API with SSE. Reasoning origin matching is on the provider only: every
+    Claude thinking block is replayed. Preserved-thinking enforcement is account- and date-gated,
+    so history stays append-only either way.
+  - **OpenAI:** Responses API, stateless (`store: false` plus
+    `include: ["reasoning.encrypted_content"]`). Output items are replayed unmodified, and reasoning
+    only to the model that produced it. Whether another model accepts foreign encrypted items is
+    INFERRED and covered by an opt-in smoke test.
+  - **Gemini:** v1beta `streamGenerateContent?alt=sse`; the Interactions API is explicitly
+    deferred. The dummy `thoughtSignature` value `skip_thought_signature_validator` is a documented
+    workaround: the Google doc URL is cited in code, a conformance test covers it, and it is
+    re-verified when the API changes.
+  - **OpenRouter, LM Studio, llama.cpp and `openai_compatible`:** one shared, tolerant Chat
+    Completions parser.
+  - **Ollama:** native `/api/chat` NDJSON with `num_ctx` set from `/api/show`. `/v1` cannot set
+    `num_ctx`, and `effectiveLimits` must use the real context.
+  - **Usage normalization:** `inputTokens` is uncached input only.
+    - Anthropic maps 1:1.
+    - OpenAI and the Chat Completions family subtract cached tokens but NOT cache writes, until a
+      smoke test shows writes are a subset.
+    - Gemini subtracts `cachedContentTokenCount` and adds thoughts to output. A non-zero
+      `toolUsePromptTokenCount` is ignored with a warning.
+    - Ollama subtracts `prompt_eval_cached_count`.
+    - Where semantics are unverified, err toward over-counting.
+- **Consequences:**
+  - Five wire formats to own, behind one conformance suite.
+  - Opt-in smoke tests check the INFERRED claims with the user's own keys.
+
 ## D-010 Renderer trust model: harden now, isolate before agent mode ships
 - **Status:** accepted (chief, 2026-10-11; raised by ag-reviewer in the ag-ui docs review)
 - **Context:** One renderer both displays untrusted model output and holds privileged capabilities
@@ -110,3 +142,23 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
   agent-contract §12.3.
 - **Consequences:** re-trust after a re-clone or remount (fail closed); identity probing is per-filesystem
   and documented by ag-workspace.
+
+## D-013 Tiered (long-context) pricing deferred
+- **Status:** accepted (chief, 2026-10-11; proposed by ag-providers)
+- **Context:** Some vendors charge more above a prompt-size threshold:
+  - OpenAI GPT-6.x and GPT-5.4 to 5.6: about 2x input and 1.5x output above 272K input tokens.
+  - Gemini 3.1 Pro and 2.5 Pro: about 2x above 200K.
+
+  `ModelInfo.pricing` has one price per field.
+- **Decision:** the catalog lists the HIGHER tier for these models, so spend caps over-count and
+  never under-count.
+  - Each entry carries its source URL, the date it was verified, and a comment giving the base
+    tier and the possible over-estimate.
+  - Priced listings are marked `source: 'catalog'`, so the UI labels costs as conservative
+    estimates.
+- **Alternative (not taken now):** add
+  `pricing.longContext?: { thresholdTokens, input, output, cacheRead?, cacheWrite? }` to the core
+  contract, and have the cost function pick the tier per request.
+- **Revisit when:** users report that short-prompt spend estimates trip caps early, or at M2 polish,
+  whichever comes first.
+- **Consequences:** costs of short prompts on tiered models can be over-estimated by up to 2x.
