@@ -65,8 +65,17 @@ describe('eslint policy', () => {
     expect(messages.join('\n')).toContain('@typescript-eslint/ban-ts-comment');
   });
 
-  it('rejects @ts-expect-error', async () => {
-    const messages = await lint('// @ts-expect-error because\nexport const n: number = "x";\n');
+  it('rejects @ts-expect-error even with a long explanatory description', async () => {
+    const messages = await lint(
+      '// @ts-expect-error: the upstream library typings are wrong here, see issue 1234\nexport const n: number = "x";\n',
+    );
+    expect(messages.join('\n')).toContain('@typescript-eslint/ban-ts-comment');
+  });
+
+  it('rejects @ts-nocheck', async () => {
+    const messages = await lint(
+      '// @ts-nocheck: generated file with a very long reason\nexport const n = 1;\n',
+    );
     expect(messages.join('\n')).toContain('@typescript-eslint/ban-ts-comment');
   });
 

@@ -47,6 +47,12 @@ export function createEslintConfig(options: EslintConfigOptions): Linter.Config[
         'no-empty': ['error', { allowEmptyCatch: false }],
         eqeqeq: ['error', 'always'],
         '@typescript-eslint/consistent-type-imports': 'error',
+        // strictTypeChecked still allows @ts-expect-error with a 10+ character description.
+        // AGENT-PROTOCOL §1 bans it outright.
+        '@typescript-eslint/ban-ts-comment': [
+          'error',
+          { 'ts-expect-error': true, 'ts-ignore': true, 'ts-nocheck': true, 'ts-check': false },
+        ],
         '@typescript-eslint/switch-exhaustiveness-check': [
           'error',
           { considerDefaultExhaustiveForUnions: false },
