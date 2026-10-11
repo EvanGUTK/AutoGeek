@@ -127,7 +127,7 @@ export function createDependencyRuleSet(): IFlattenedRuleSet {
  * build) that resolve under a `dist/` directory. `doNotFollow` keeps the edge, so every rule still
  * sees it, but does not crawl the build output as source.
  */
-const WORKSPACE_BUILD_OUTPUT = '^(apps|packages|tooling)/[^/]+/(dist|out|coverage)/';
+const WORKSPACE_BUILD_OUTPUT = '^(apps/[^/]+|packages/[^/]+|tooling)/(dist|out|coverage)/';
 
 export const CRUISE_OPTIONS: ICruiseOptions = {
   doNotFollow: { path: ['node_modules', WORKSPACE_BUILD_OUTPUT] },
