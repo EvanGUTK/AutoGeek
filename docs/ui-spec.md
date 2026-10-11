@@ -940,16 +940,18 @@ interface DisplaySafe {
   segments: Segment[];
   plain: string;                                         // the same content as one string, markers inline (for native dialogs)
   stats: { chars: number; lines: number; hidden: number; truncated: boolean; normalizedCrlf: number };
-                                                         // hidden = code points shown as an escape or inside a collapsed marker
+                                                         // hidden = code points shown as an escape or tab marker or inside a collapsed marker
   flags: { mixedScript: boolean; confusable: boolean };
   flagged: Array<[start: number, end: number]>;          // code-point ranges of tokens that set a flag
 }
 // Two exports with branded outputs, so a field that is part of what runs can never be rendered in
-// prose mode by mistake. The brands exist only in the type system and are produced only inside core.
-declare const literalBrand: unique symbol;
-declare const proseBrand: unique symbol;
-type LiteralText = DisplaySafe & { readonly [literalBrand]: true };
+// prose mode by mistake. Each brand is a REAL property keyed by a module-private unique symbol that
+// core sets on the result; the symbols are not exported, so nothing outside core can build one.
+const literalBrand: unique symbol = Symbol('literalText');     // core-private, not exported
+const proseBrand: unique symbol = Symbol('proseText');         // core-private, not exported
+type LiteralText = DisplaySafe & { readonly [literalBrand]: true };   // the types are exported
 type ProseText = DisplaySafe & { readonly [proseBrand]: true };
+declare function isLiteralText(value: unknown): value is LiteralText; // reads the private symbol
 declare function displaySafeLiteral(input: string, options: DisplaySafeOptions): Result<LiteralText, 'too_long'>;
 declare function displaySafeProse(input: string, options: DisplaySafeOptions): Result<ProseText, 'too_long'>;
 declare function describeForSpeech(text: DisplaySafe): string;   // §8.5
@@ -957,12 +959,24 @@ declare function describeForSpeech(text: DisplaySafe): string;   // §8.5
 
 **Requirement (branded types).** The action-block, native-dialog text, tool-name, server-name and
 file-name renderers accept **only `LiteralText`**; the description and plan components accept only
-`ProseText`. Neither brand is exported as a constructor, so the only way to obtain one is the matching
-function, and converting one into the other would need `as unknown as`, which the project bans. A
-type-level test using Vitest's `expectTypeOf` (not `@ts-expect-error`, also banned) asserts that
-`ProseText` is not assignable to `LiteralText` and that each renderer's prop type is exactly its
-brand. The lint rule on importing `displaySafeProse` stays as the early signal, but a re-export
-through an allowed module or barrel cannot defeat the types.
+`ProseText`. Core builds the result with the brand property already in the object literal, so core
+needs no type assertion, and because the symbols are private nothing else can produce a value that
+carries them. A type-only brand would not be enough: `({ segments, plain }) as LiteralText` compiles
+(an assertion to a subtype is legal), and the assertion lint rule alone would also block core from
+minting a type-only brand. Therefore:
+
+- **Compile time:** a type-level test using Vitest's `expectTypeOf` (not `@ts-expect-error`, also
+  banned) asserts that `ProseText` is not assignable to `LiteralText` and that each renderer's prop
+  type is exactly its brand. The package must still compile with declaration emit (the exported
+  types name private symbols); ag-foundation proves that in the first implementation commit.
+- **Run time:** each `LiteralText`-only renderer calls core's `isLiteralText(value)` on its prop and
+  throws a programmer error if it is false, so a fabricated or cast value (including one produced
+  by `as unknown as`) is caught in tests and in development builds.
+- **Tests include the fabrication case:** a plain object cast to `LiteralText` renders nothing and
+  throws, and a `ProseText` cannot reach an action block by any typed path.
+
+The lint rule on importing `displaySafeProse` stays as the early signal, and a re-export through an
+allowed module or barrel cannot defeat the types or the run-time check.
 
 `displaySafeLiteral` is for every action field (command, argv, cwd, paths, URLs, env, MCP names and
 input), native-dialog text, tool and server names, and anything else that is part of what runs or
@@ -1101,11 +1115,18 @@ look-alike ones, so an accessible name built from the raw string reads as clean 
 exports `describeForSpeech(text)`, and every accessible name, tooltip and live announcement for an
 untrusted string is built from it, never from the raw string.
 
-- Text segments are kept as they are. Other segments become spoken markers: `escape` →
-  `hidden character U+XXXX`, `tab` → `tab`, `collapsed` → `N spaces`, `N blank lines` or
-  `N combining marks`, `omitted` → `N more characters`.
+- Text segments are kept as they are. Other segments become spoken markers, **pluralized**:
+  `escape` → `hidden character U+XXXX`, `tab` → `tab`, `collapsed` → `1 space` / `N spaces`,
+  `1 blank line` / `N blank lines`, `1 combining mark` / `N combining marks`, `omitted` →
+  `1 more character` / `N more characters`.
 - Pieces are joined with a single space, with no added punctuation, so the output is deterministic.
-- When `flags.mixedScript` or `flags.confusable` is set, `possible look-alike characters` is appended.
+- **The spoken form ends with a summary derived only from `stats` and `flags`**, never from the text:
+  `Summary: ` followed by the parts that apply, separated by `; ` and ending with a period:
+  `N characters shown as markers` (`1 character shown as a marker` when `stats.hidden` is 1; omitted
+  when it is 0), `text shortened` (when `stats.truncated`), and `possible look-alike characters`
+  (when `flags.mixedScript` or `flags.confusable`). With nothing to report there is no summary. Input
+  text can imitate a spoken marker word for word, but it can never come after the summary, so the
+  summary is the authoritative statement of what was hidden.
 - The visible chips are `aria-hidden`, so a marker is not read twice. The tooltip uses the same
   string.
 - The raw string remains the only input for paths, IPC and keys. The spoken form is for people.
@@ -1113,10 +1134,13 @@ untrusted string is built from it, never from the raw string.
 | Input | `describeForSpeech` |
 |---|---|
 | `ls` | `ls` |
-| `invoice\u202Efdp.exe` | `invoice hidden character U+202E fdp.exe` |
-| `a` + 20 spaces + `b` | `a 20 spaces b` |
-| `a\tb` | `a tab b` |
-| `x\n` + 5 blank lines + `y` | `x 5 blank lines y` |
-| `e` + 20 × `\u0301` | `e 20 combining marks` |
-| `p\u0430ypal` (Cyrillic а) | `pаypal possible look-alike characters` |
-| 300 × `a`, `inline`, `maxChars: 256` | 256 `a` then `44 more characters` |
+| `invoice\u202Efdp.exe` | `invoice hidden character U+202E fdp.exe Summary: 1 character shown as a marker.` |
+| `a` + 1 space + `b` | `a b` (no markers, no summary) |
+| `a` + 20 spaces + `b` | `a 20 spaces b Summary: 20 characters shown as markers.` |
+| `a\tb` | `a tab b Summary: 1 character shown as a marker.` |
+| `x\n` + 1 blank line + `y` | unchanged, no summary (at the limit) |
+| `x\n` + 5 blank lines + `y` | `x 5 blank lines y Summary: 5 characters shown as markers.` |
+| `e` + 5 × `\u0301` | `e 5 combining marks Summary: 5 characters shown as markers.` |
+| `p\u0430ypal` (Cyrillic а) | `pаypal Summary: possible look-alike characters.` |
+| 300 × `a`, `inline`, `maxChars: 256` | 256 `a`, `44 more characters`, `Summary: text shortened.` |
+| the literal text `hidden character U+202E` | unchanged, **no summary** (text cannot fake the summary) |
