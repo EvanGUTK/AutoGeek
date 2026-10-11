@@ -415,13 +415,14 @@ Sent on every emitted transition; `workspace.getState` returns `{ root, watch: W
 A change to an exec-vector file from ANY cause (the user's editor, git operations, installers,
 scripts) can make an old exec session grant run new code. The tool-based triggers (approved writes
 to exec-vector files, tools that declare `mutatesWorkTree`) stay the race-free primary. This source
-is the second layer. Port consumed by ag-agent (defined in `core`):
+is the second layer. Port consumed by ag-agent (defined in `core`, name `ExecVectorChangeTap`):
 
 ```ts
-interface ExecVectorChangeSource {            // ag-agent's port (name and exact shape per the chief's approval)
-  subscribe(listener: (e: { rootKey: string; kind: 'changed' | 'degraded' | 'recovered' }) => void): () => void;
+type ExecVectorTapEvent = { rootKey: string; kind: 'changed' | 'degraded' | 'recovered' };   // no path (chief ruling)
+interface ExecVectorChangeTap {                // final name and shape, chief-approved, defined in core by ag-agent
+  subscribe(listener: (e: ExecVectorTapEvent) => void): () => void;   // one listener for all roots
   flush(rootKey: string, signal: AbortSignal): Promise<void>;
-  isHealthy(rootKey: string): boolean;
+  isHealthy(rootKey: string): boolean;                                // false until the first full scan; false while degraded
 }
 ```
 
@@ -439,11 +440,12 @@ interface ExecVectorChangeSource {            // ag-agent's port (name and exact
 | 13.10 | race window | asynchronous by nature: a change immediately followed by an exec can slip through before the event arrives. Documented in `docs/SECURITY.md` and in the source's header; NOT asserted away. The tool-based triggers remain the primary |
 | 13.11 | nested repos and submodules | `.git` files and hooks of nested repos are covered |
 | 13.12 | root removed or trust revoked | the source emits `degraded` and then stops; subscribers are not leaked (handle counter) |
-| 13.13 | subscribe and unsubscribe | the returned function unsubscribes exactly once (idempotent); no event is delivered after it returns; a throwing callback does not stop the other subscribers or the watcher |
-| 13.14 | payload | carries `rootKey` and `kind` only. ag-agent asked for a root-relative `path` on `changed` for the audit log; that is a repository-controlled string, so it is the chief's call (if added, it goes through the display-safe function and is never shown raw) |
+| 13.13 | subscribe and unsubscribe | one listener receives events for ALL roots (each event carries its `rootKey`); the returned function unsubscribes exactly once (idempotent); no event is delivered after it returns; a throwing callback does not stop the other subscribers or the watcher |
+| 13.14 | payload | carries `rootKey` and `kind` only (chief ruling: no path, since it is a repository-controlled string); the audit records kind and rootKey |
 | 13.15 | untrusted root | no source is created (no agent mode there), and `subscribe` on an untrusted root returns an unsubscribe that does nothing and emits `degraded` once |
 | 13.16 | dependency-tree top-level entries (reviewer's cost case) | a first test run that creates `node_modules/.vite` or `node_modules/.cache` emits NOTHING (the chief excluded dependency trees entirely; my earlier sketch of watching their top-level entries is withdrawn), and nested rewrites such as `.vite/vitest/<hash>/results.json` emit nothing; a root-level `.cache/` or `dist/` that is not an exec vector emits nothing either |
 | 13.17 | `flush(rootKey, signal)`: what it guarantees | resolves after (1) the raw-event buffer and the burst-coalescing tick are drained and delivered to listeners, and (2) a stat rescan of every KNOWN exec-vector file (mtime, size, ino as `bigint`, and a content hash when the stat differs from the snapshot) has run and emitted `changed` for any difference. It does NOT wait for native events the OS has not delivered yet (FSEvents and inotify latency is not observable), and it detects a NEW exec-vector file only through events. Documented in the source header and `docs/SECURITY.md`; the SECURITY residual covers the within-one-command case |
 | 13.18 | flush cost and bounds | the rescan stats only known exec-vector files (bounded count, named cap; over the cap the source is `degraded`); it honors the `AbortSignal` (rejects with the abort reason, no leak); concurrent flushes share one rescan; test with a tree of 10,000 files and 200 exec-vector files under a time bound |
 | 13.19 | flush ordering test | a test edits `Makefile` (real fs), immediately calls `flush`, and asserts a `changed` was delivered BEFORE `flush` resolved, even when the native event is delayed by a test seam (the rescan catches it) |
-| 13.20 | `isHealthy(rootKey)` | false from the moment a degradation is detected until `recovered`; false for an unknown or untrusted root; true only for a healthy, trusted, watched root |
+| 13.20 | `isHealthy(rootKey)` | false until the FIRST full scan of the root completes, false from the moment a degradation is detected until `recovered`, false for an unknown or untrusted root; true only for a healthy, trusted, watched, fully scanned root |
+| 13.21 | `flush` aborts promptly (the gate bounds it at about 1,500 ms and combines it with the request signal) | an aborted signal rejects within one event-loop turn, the rescan loop checks the signal between files, and nothing is left running; a failed or aborted flush never reports success, so the gate falls back to ask |
