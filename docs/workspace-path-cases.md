@@ -178,6 +178,10 @@ results (content of sensitive files is excluded from search output unless approv
 | 7.22 | a normal-looking path whose realpath is `.git/config` through `..` | classified on the canonical path |
 | 7.23 | `.env` as a directory name | treated as sensitive for any path beneath it |
 | 7.24 | file named `x.pem.txt` | not sensitive by extension, listed so the matcher is anchored to the final extension |
+| 7.25 | READS of credential-bearing git files: `.git/config`, `.git/config.worktree`, `.git/FETCH_HEAD`, `.git/logs/**` (clone writes `clone: from <url>`), `.git/modules/*/config`, `.git/modules/*/FETCH_HEAD`, `.git/worktrees/*/config.worktree`, `.git-credentials` (chief) | `git_remote_credentials`, `sensitive`, read `access: confirm` (tokens are commonly embedded in remote URLs); search tools exclude their content unless approved |
+| 7.26 | READS elsewhere under `.git/` (`refs/**`, `HEAD`, `packed-refs`, `objects/**`, `index`) | `free` (writes stay default-deny, 7.6); the agent gets repository state through the git service, not raw reads |
+| 7.27 | `.gitmodules` read | `free` (URLs are shown, chief ruling); its writes are `exec_vector` (7a.2) |
+| 7.28 | `.git/config` via a symlink named `remote.txt`, or through `..` | classified on the canonical path, so read `confirm` as well (same as 7.21/7.22) |
 
 ## 7a. Code-execution vectors (`exec_vector`, chief addition)
 
@@ -227,6 +231,31 @@ accepted cost; 7a.13 is elevated for writes and ordinary for reads). Rows whose 
 workspace files), so "elevated" keeps its meaning. The table is data, so a review change is a
 one-line change per row. `elevated` is a flag on the classifier result, separate from `category`,
 so permissions can change policy without touching the matcher.
+
+### `isExecVector(canonicalRelativePath)` for the permission gate (chief)
+
+An approved write to an exec-vector file clears all `exec` / `exec_shell` session grants for the
+root (`agent-contract` §2), because a grant for `make test` matches argv, not the recipe behind it.
+This package exposes the single source of truth as a tiny pure predicate, handed to the gate through
+a port in `core` (shape agreed with ag-agent):
+
+```ts
+interface ExecVectorClassifier { isExecVector(canonicalRelativePath: string): boolean }
+```
+
+`isExecVector` is true iff the path matches any §7a row (including the `.git/` confirm allowlist,
+the gitlink file, the `.env*` rows 7a.16 and the dependency directories 7a.20), after
+canonicalization and case/Unicode normalization. It is derived from the same rule data as
+`elevated`, never a second list. The tool calls it with the realpath it already computed.
+
+| # | Case | Expected |
+|---|---|---|
+| X.1 | every §7a row has at least one positive example in the test data and `isExecVector` is true for each | holds (a row without an example fails the test) |
+| X.2 | the negative examples (7a.19, `conftest.py`, `tox.ini`, `noxfile.py`, `vitest.setup.ts`, `vite.config.ts`, `husky.ts`, `dist/x.js`, `src/a.ts`) | false |
+| X.3 | case and NFD variants, a symlink onto an exec vector, `..` forms | true (same canonicalization as the classifier) |
+| X.4 | the ops that count are every fs effect on the path: `write`, `delete`, `rename` (BOTH the source and the destination path), `chmod`, and `mkdir` of a dependency directory | the tool tests `isExecVector` on each affected path and reports it to the gate |
+| X.5 | consistency: `isExecVector(p)` implies `elevated` for a write to `p`, and `elevated` implies `isExecVector` except rows with category `autogeek_internal` / `git_internal` (those are denied, never written) | holds, property-tested over the rule data |
+| X.6 | known blind spots, stated in `docs/SECURITY.md`: (a) edits the tool never sees (the user's own edits, other programs); (b) work-tree changes made by git operations (`checkout`, `switch`, `reset --hard`, `merge`, `rebase`, `pull`, `stash pop`, `cherry-pick`, `revert`, `restore`) and by installers or other commands run through `run_command`, which can rewrite Makefiles or manifests without a write tool call. Open question for ag-agent: should those git tools and any non-read-only exec also clear grants? This package can only report the fact (the git tools declare `mutatesWorkTree: true`) | documented |
 
 ### Classifier result, consistency across consumers
 
