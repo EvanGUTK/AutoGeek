@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Launch one AutoGeek agent: its own git worktree + its own tmux window running its own Claude CLI.
 #
-# usage: scripts/agents/launch.sh <agent> <model> <effort> <topic>
+# usage: scripts/agents/launch.sh [--here] <agent> <model> <effort> <topic>
+#   --here  run the agent in the CURRENT terminal pane instead of a new tmux window
 #   agent   short name, e.g. foundation  (session is named ag-<agent>)
 #   model   claude-sonnet-5-5 | claude-opus-5-5   (never fable: chief only)
 #   effort  high | xhigh
 #   topic   branch topic, e.g. bootstrap  -> branch agent/<agent>/<topic>
 set -euo pipefail
 
+here=0
+if [[ "${1:-}" == "--here" ]]; then here=1; shift; fi
+
 if [[ $# -ne 4 ]]; then
-  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 64
 fi
 
@@ -34,7 +38,9 @@ session="autogeek"
 brief="docs/briefs/$agent.md"
 
 [[ -f "$root/$brief" ]] || { echo "missing brief: $root/$brief" >&2; exit 66; }
-command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 69; }
+if [[ $here -eq 0 ]]; then
+  command -v tmux >/dev/null || { echo "tmux not installed" >&2; exit 69; }
+fi
 
 mkdir -p "$wt_root" "$root/.agents/inbox/$agent" "$root/.agents/inbox/chief" \
          "$root/.agents/status" "$root/.agents/reviews"
@@ -43,6 +49,13 @@ if [[ ! -d "$wt" ]]; then
   git -C "$root" worktree add -b "$branch" "$wt" main
 else
   echo "worktree $wt already exists; reusing" >&2
+fi
+
+prompt="You are ag-$agent, an AutoGeek agent. Your worktree is $wt on branch $branch. Primary checkout (mailbox, status, reviews): $root. Read ARCHITECTURE.md, docs/AGENT-PROTOCOL.md, docs/LEARNINGS.md, then your brief $brief, and begin. Your chief is the session autogeek-d5."
+
+if [[ $here -eq 1 ]]; then
+  cd "$wt"
+  exec claude --model "$model" --effort "$effort" --name "ag-$agent" --permission-mode auto "$prompt"
 fi
 
 if tmux has-session -t "$session" 2>/dev/null; then
@@ -54,8 +67,6 @@ if tmux has-session -t "$session" 2>/dev/null; then
 else
   tmux new-session -d -s "$session" -n "$agent" -c "$wt"
 fi
-
-prompt="You are ag-$agent, an AutoGeek agent. Your worktree is $wt on branch $branch. Primary checkout (mailbox, status, reviews): $root. Read ARCHITECTURE.md, docs/AGENT-PROTOCOL.md, docs/LEARNINGS.md, then your brief $brief, and begin. Your chief is the session autogeek-d5."
 
 tmux send-keys -t "$session:$agent" \
   "claude --model $model --effort $effort --name ag-$agent --permission-mode auto $(printf '%q' "$prompt")" Enter
