@@ -548,8 +548,10 @@ while `git.*`, `terminal.*` and `agent.*` need trust (`untrusted_workspace`). A 
 
 **Features that need trust are never silently disabled.** The controls stay enabled and visible; using
 one (the terminal panel or its shortcut, the source-control view, the agent composer in any mode,
-the command palette entries) shows the **trust prompt** in place of the feature, and moves focus to
-it because the user just asked for something. It is a panel, not an error toast, and it says why for
+the command palette entries) shows the **trust prompt** in place of the feature. Focus moves to the
+prompt's heading (programmatic focus, so a screen reader reads the reason first), never to **Trust
+this folder…**, so a stray Enter cannot start the trust flow; **Stay in Restricted mode** is the
+first action in tab order. It is a panel, not an error toast, and it says why for
 that feature:
 
 | Feature | Reason shown |
