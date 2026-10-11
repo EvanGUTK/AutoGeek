@@ -1,7 +1,8 @@
+import { ERROR_MESSAGES } from '@autogeek/core';
 import { describe, expect, it } from 'vitest';
 import {
   resolveLexically,
-  type LexicalErrorCode,
+  type LexicalReason,
   type LexicalOptions,
   type LexicalResult,
 } from './lexical.ts';
@@ -19,16 +20,28 @@ function win(input: string, extra: Partial<LexicalOptions> = {}): LexicalResult 
 
 function segmentsOf(result: LexicalResult): readonly string[] {
   if (!result.ok) {
-    throw new Error(`expected ok, got ${result.code}`);
+    throw new Error(`expected ok, got ${result.error.code}`);
   }
   return result.value.relativeSegments;
 }
 
-function codeOf(result: LexicalResult): LexicalErrorCode {
+function reasonOf(result: LexicalResult): LexicalReason {
   if (result.ok) {
     throw new Error(`expected an error, got ${result.value.absolute}`);
   }
-  return result.code;
+  const details = result.error.details;
+  if (typeof details !== 'object' || details === null || Array.isArray(details)) {
+    throw new Error('expected details with a reason');
+  }
+  const reason = details['reason'];
+  if (
+    reason !== 'invalid_path' &&
+    reason !== 'unsupported_path_form' &&
+    reason !== 'outside_root'
+  ) {
+    throw new Error('expected a known reason');
+  }
+  return reason;
 }
 
 describe('1. lexical normalization (posix)', () => {
@@ -57,7 +70,7 @@ describe('1. lexical normalization (posix)', () => {
     ['absolute path that is an ancestor', '/w'],
     ['filesystem root', '/'],
   ] as const)('rejects as outside_root: %s', (_label, input) => {
-    expect(codeOf(posix(input))).toBe('outside_root');
+    expect(reasonOf(posix(input))).toBe('outside_root');
   });
 
   it.each([
@@ -75,7 +88,7 @@ describe('1. lexical normalization (posix)', () => {
     ['1.15 multibyte component over 255 bytes', `${'é'.repeat(128)}/x`],
     ['1.14 path over 4096 bytes', `${'a/'.repeat(2049)}x`],
   ] as const)('rejects as invalid_path: %s', (_label, input) => {
-    expect(codeOf(posix(input))).toBe('invalid_path');
+    expect(reasonOf(posix(input))).toBe('invalid_path');
   });
 
   it('accepts a component of exactly 255 bytes', () => {
@@ -107,7 +120,7 @@ describe('1. lexical normalization (posix)', () => {
   });
 
   it('1.18 a root that is a prefix of a longer sibling name does not contain it', () => {
-    expect(codeOf(posix('/w/proj2/x'))).toBe('outside_root');
+    expect(reasonOf(posix('/w/proj2/x'))).toBe('outside_root');
   });
 
   it('never echoes the input in an error', () => {
@@ -127,7 +140,7 @@ describe('1.17 / 4.1 case and Unicode folding is only a pre-filter on case-insen
       input: '/users/a/proj/x',
       platform: 'posix',
     });
-    expect(codeOf(result)).toBe('outside_root');
+    expect(reasonOf(result)).toBe('outside_root');
   });
 
   it('accepts a differently-cased root when the volume is case-insensitive', () => {
@@ -145,7 +158,7 @@ describe('1.17 / 4.1 case and Unicode folding is only a pre-filter on case-insen
     const nfd = 'e\u0301';
     const root = `/w/${nfc}`;
     const input = `/w/${nfd}/x`;
-    expect(codeOf(resolveLexically({ root, input, platform: 'posix' }))).toBe('outside_root');
+    expect(reasonOf(resolveLexically({ root, input, platform: 'posix' }))).toBe('outside_root');
     expect(
       segmentsOf(resolveLexically({ root, input, platform: 'posix', caseInsensitive: true })),
     ).toEqual(['x']);
@@ -185,12 +198,12 @@ describe('2. Windows and UNC forms (tested lexically on every host)', () => {
     ['rooted without a drive', '\\x'],
     ['rooted without a drive, forward slash', '/x'],
   ] as const)('rejects as unsupported_path_form: %s', (_label, input) => {
-    expect(codeOf(win(input))).toBe('unsupported_path_form');
+    expect(reasonOf(win(input))).toBe('unsupported_path_form');
   });
 
   it('2.3 rejects a path on another drive as outside_root', () => {
-    expect(codeOf(win('D:\\outside\\x'))).toBe('outside_root');
-    expect(codeOf(win('C:\\w\\other\\x'))).toBe('outside_root');
+    expect(reasonOf(win('D:\\outside\\x'))).toBe('outside_root');
+    expect(reasonOf(win('C:\\w\\other\\x'))).toBe('outside_root');
   });
 
   it.each([
@@ -212,7 +225,7 @@ describe('2. Windows and UNC forms (tested lexically on every host)', () => {
     ['illegal character *', 'a*b'],
     ['1.14 over 32767 characters', `${'a/'.repeat(16400)}x`],
   ] as const)('rejects as invalid_path: %s', (_label, input) => {
-    expect(codeOf(win(input))).toBe('invalid_path');
+    expect(reasonOf(win(input))).toBe('invalid_path');
   });
 
   it('applies the posix rules for a posix platform even with windows-looking text', () => {
@@ -263,6 +276,31 @@ describe('8.5 the decision is stable under redundant separators', () => {
     expect(redundant.ok).toBe(plain.ok);
     if (plain.ok && redundant.ok) {
       expect(redundant.value.absolute).toBe(plain.value.absolute);
+    }
+  });
+});
+
+describe('errors are core errors with a stable reason', () => {
+  it.each([
+    ['../x', 'outside_workspace', 'outside_root'],
+    ['a\u0000b', 'invalid_input', 'invalid_path'],
+    ['', 'invalid_input', 'invalid_path'],
+  ] as const)('%j maps to %s with reason %s', (input, code, reason) => {
+    const result = posix(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe(code);
+      expect(result.error.message).toBe(ERROR_MESSAGES[code]);
+      expect(result.error.details).toEqual({ reason });
+    }
+  });
+
+  it('maps a windows-only form to unsupported', () => {
+    const result = win('\\\\server\\share\\x');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('unsupported');
+      expect(result.error.details).toEqual({ reason: 'unsupported_path_form' });
     }
   });
 });

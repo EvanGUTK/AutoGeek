@@ -22,9 +22,16 @@
  * containment decision is made on the realpath, which carries the on-disk spelling.
  */
 
+import { coreError, err, ok, type CoreError, type Result } from '@autogeek/core';
+
 export type LexicalPlatform = 'posix' | 'win32';
 
-export type LexicalErrorCode = 'invalid_path' | 'unsupported_path_form' | 'outside_root';
+/**
+ * Why a path was refused. It rides in the error's `details` as a constant string, never any part of
+ * the input. The core code is `invalid_input` (invalid_path), `unsupported` (unsupported_path_form)
+ * or `outside_workspace` (outside_root).
+ */
+export type LexicalReason = 'invalid_path' | 'unsupported_path_form' | 'outside_root';
 
 export interface LexicalOptions {
   /** Absolute, already-normalized root. A malformed root is a programmer error and throws. */
@@ -46,9 +53,7 @@ export interface LexicalValue {
   readonly trailingSlash: boolean;
 }
 
-export type LexicalResult =
-  | { readonly ok: true; readonly value: LexicalValue }
-  | { readonly ok: false; readonly code: LexicalErrorCode };
+export type LexicalResult = Result<LexicalValue, CoreError>;
 
 const MAX_PATH_BYTES: Readonly<Record<LexicalPlatform, number>> = { posix: 4096, win32: 32767 };
 const MAX_COMPONENT_BYTES = 255;
@@ -70,8 +75,14 @@ type PrefixResult =
   | { readonly ok: true; readonly prefix: Prefix }
   | { readonly ok: false; readonly code: 'unsupported_path_form' };
 
-function fail(code: LexicalErrorCode): LexicalResult {
-  return { ok: false, code };
+const REASON_CODE = {
+  invalid_path: 'invalid_input',
+  unsupported_path_form: 'unsupported',
+  outside_root: 'outside_workspace',
+} as const satisfies Record<LexicalReason, CoreError['code']>;
+
+function fail(reason: LexicalReason): LexicalResult {
+  return err(coreError(REASON_CODE[reason], { reason }));
 }
 
 function byteLength(text: string): number {
@@ -226,7 +237,7 @@ function walkComponents(
   startsAbsolute: boolean,
   rootSegments: readonly string[],
   platform: LexicalPlatform,
-): Walk | LexicalErrorCode {
+): Walk | LexicalReason {
   const stack: string[] = startsAbsolute ? [] : [...rootSegments];
   const floor = startsAbsolute ? 0 : rootSegments.length;
   let minDepth = Number.POSITIVE_INFINITY;
@@ -299,13 +310,10 @@ export function resolveLexically(options: LexicalOptions): LexicalResult {
   if (byteLength(absolute) > MAX_PATH_BYTES[platform]) {
     return fail('invalid_path');
   }
-  return {
-    ok: true,
-    value: {
-      relativeSegments,
-      absolute,
-      isRoot: relativeSegments.length === 0,
-      trailingSlash: prefix.trailingSlash,
-    },
-  };
+  return ok({
+    relativeSegments,
+    absolute,
+    isRoot: relativeSegments.length === 0,
+    trailingSlash: prefix.trailingSlash,
+  });
 }

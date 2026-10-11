@@ -4,9 +4,9 @@ export type { PathClassification, PathOp } from './path-security/classifier.ts';
 export type { PathAccess, PathCategory } from './path-security/rules.ts';
 export { resolveLexically } from './path-security/lexical.ts';
 export type {
-  LexicalErrorCode,
   LexicalOptions,
   LexicalPlatform,
+  LexicalReason,
   LexicalResult,
   LexicalValue,
 } from './path-security/lexical.ts';
