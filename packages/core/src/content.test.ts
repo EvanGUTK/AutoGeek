@@ -161,6 +161,47 @@ describe('finite hard caps on tool output (review K5)', () => {
     );
   });
 
+  describe('valid multi-block output is never falsely rejected (review D2)', () => {
+    const MiB = 1024 * 1024;
+    const text = (bytes: number): unknown => ({ type: 'text', text: 'a'.repeat(bytes) });
+
+    it('accepts two 2 MiB ASCII blocks (4 MiB actual)', () => {
+      expect(ToolOutputSchema.safeParse([text(2 * MiB), text(2 * MiB)]).success).toBe(true);
+    });
+
+    it('accepts four 2 MiB blocks totalling exactly the cap and rejects one byte more', () => {
+      const four = [text(2 * MiB), text(2 * MiB), text(2 * MiB), text(2 * MiB)];
+      expect(ToolOutputSchema.safeParse(four).success).toBe(true);
+      expect(ToolOutputSchema.safeParse([...four, text(1)]).success).toBe(false);
+    });
+
+    it('accepts many small blocks just under the cap and rejects them just over', () => {
+      const chunk = 1024;
+      const count = TOOL_OUTPUT_MAX_BYTES / chunk;
+      const under = Array.from({ length: count }, () => text(chunk));
+      expect(ToolOutputSchema.safeParse(under).success).toBe(true);
+      expect(ToolOutputSchema.safeParse([...under, text(1)]).success).toBe(false);
+    });
+
+    it('accepts text plus an image whose combined size is just under the cap', () => {
+      // image(3) is 4 base64 characters; 8 MiB - 4 bytes of text fills the cap exactly.
+      expect(ToolOutputSchema.safeParse([text(TOOL_OUTPUT_MAX_BYTES - 4), image(3)]).success).toBe(
+        true,
+      );
+      expect(ToolOutputSchema.safeParse([text(TOOL_OUTPUT_MAX_BYTES - 3), image(3)]).success).toBe(
+        false,
+      );
+    });
+
+    it('measures multi-byte text exactly across blocks', () => {
+      const twoByte = (units: number): unknown => ({ type: 'text', text: 'é'.repeat(units) });
+      expect(ToolOutputSchema.safeParse([twoByte(2 * MiB), twoByte(2 * MiB)]).success).toBe(true);
+      expect(
+        ToolOutputSchema.safeParse([twoByte(2 * MiB), twoByte(2 * MiB), text(1)]).success,
+      ).toBe(false);
+    });
+  });
+
   it('rejects many images whose combined size exceeds the output cap', () => {
     const blocks = Array.from({ length: 3 }, () => image(IMAGE_MAX_BYTES));
     expect(ToolOutputSchema.safeParse(blocks).success).toBe(false);

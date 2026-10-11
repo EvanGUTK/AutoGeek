@@ -86,16 +86,9 @@ export const ImageBlockSchema = z.strictObject({
 });
 export type ImageBlock = z.infer<typeof ImageBlockSchema>;
 
-const utf8Bytes = (text: string): number => {
-  // A string of N UTF-16 units is at most 3N and at least N bytes: skip encoding when decidable.
-  if (text.length > TOOL_OUTPUT_MAX_BYTES) {
-    return text.length;
-  }
-  if (text.length * 3 <= TOOL_OUTPUT_MAX_BYTES) {
-    return text.length * 3;
-  }
-  return new TextEncoder().encode(text).length;
-};
+/** Exact UTF-8 size. A string longer than the cap in UTF-16 units is over the cap in bytes too. */
+const utf8Bytes = (text: string): number =>
+  text.length > TOOL_OUTPUT_MAX_BYTES ? text.length : new TextEncoder().encode(text).length;
 
 /** Serialized size used for the total cap: UTF-8 bytes of text plus base64 characters. */
 function outputSize(output: string | (TextBlock | ImageBlock)[]): number {
