@@ -87,6 +87,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `user_declined` | The user declined a native confirmation dialog shown by main (protected path, trust, saved allow rule) |
 | `protected_path` | Hard-denied write to repository-integrity paths (`.git/{HEAD,index,objects}`); no dialog and no override |
 | `untrusted_workspace` | Operation needs a trusted workspace |
+| `too_long` | The text main must put in a native confirmation exceeds the dialog bound (`docs/ui-spec.md` §8); the operation is refused, never shown cut |
 | `conflict` | Stale write or run state conflict; `details.kind` says which (`paths_changed`, `run_active`, a disk change) |
 | `too_large` | Exceeds a size cap |
 | `cancelled` | Operation was cancelled |
@@ -191,7 +192,8 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 
 ### `workspace.setTrust`
 - Input: `{ trusted: boolean }` (applies to the current root, set only from the trust-prompt UI).
-- Output: `{ trusted: boolean }`. Errors: `not_found` (no root open), `user_declined`.
+- Output: `{ trusted: boolean }`. Errors: `not_found` (no root open), `user_declined`, `too_long` (the
+  folder path is too long to show in the confirmation, so trust is refused).
 - `trusted: true` needs a **native confirmation built by main from its own data** (the folder name
   and path, through the display-safe function). A renderer-supplied flag proves nothing, since a
   compromised renderer could send it (D-010). `trusted: false` takes effect at once and needs no
@@ -213,7 +215,8 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   only. Default `maxBytes` is 2 MiB; above it `truncated` is `true` and the editor opens read-only
   with the large-file fallback; the hard cap is 16 MiB (`too_large`). These defaults are ag-workspace's
   and may be revised.
-- Errors: `not_found`, `outside_workspace`, `user_declined`, `too_large` (hard cap).
+- Errors: `not_found`, `outside_workspace`, `user_declined`, `too_large` (hard cap), `too_long` (the
+  path is too long to show in the confirmation dialog, so the read is refused).
 - This is a user-driven editor action; main still enforces containment and the sensitive-path
   rules, split into two classes by ag-workspace:
   - **Confirmable** (`.env*`, key and credential files, `.git/config`, `.git/hooks`; templates such as
@@ -232,7 +235,7 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 - Input: `{ path: string; text: string; expectedVersion?: string }` (the `version` from the read).
 - Output: `{ version: string; mtimeMs: number }`.
 - Errors: `outside_workspace`, `user_declined`, `protected_path`, `conflict` (disk changed since
-  `expectedVersion`), `too_large`. Confirmable paths use the same native
+  `expectedVersion`), `too_large`, `too_long` (as for `readFile`). Confirmable paths use the same native
   confirmation as `workspace.readFile`; hard-denied paths are `protected_path`.
 - Writes are atomic (temp file + rename) in main. The UI offers "overwrite / reload / compare" on
   `conflict`.
@@ -346,6 +349,12 @@ on:
 5. Budgets come from the `agent.budgets` setting (§2), read by main at run start through an injected
    `budgetsFor()`. The native confirmation lives in the `settings.set` handler.
 
+### 5.4 Remaining request to ag-agent
+
+`permissions.addRule` shows a native confirmation whose text is bounded (`docs/ui-spec.md` §8). A rule
+whose literal text exceeds the bound must be refused, never shown cut, so `docs/agent-contract.md` §6
+should list `too_long` among its errors.
+
 ## 6. `auth.*` (owner: ag-auth)
 
 ag-auth's channel set, from their proposal to the chief. `CredentialRef` is ag-auth's strict core
@@ -430,8 +439,8 @@ record in main, and a stored key is bound to the host it was created with.
 - Output: `CredentialRef` (with the new display-safe `baseUrl`).
 - Errors: `not_found`, `base_url_not_editable` (hosted providers: anthropic, openai, google,
   openrouter have fixed catalog URLs), `invalid_base_url` (unparseable, scheme other than
-  `http:`/`https:`, embedded credentials), `user_declined`, plus the provider-domain projection
-  (`domain_error`, `ProviderErrorSafe`).
+  `http:`/`https:`, embedded credentials), `user_declined`, `too_long` (the URL does not fit the
+  confirmation), plus the provider-domain projection (`domain_error`, `ProviderErrorSafe`).
 - Only `openai_compatible` and the local servers (ollama, lmstudio, llamacpp) are editable. The
   provider catalog says so with `baseUrl: { editable: false; url } | { editable: true; defaultUrl? }`.
 - Main shows a native confirmation, built by main, at one of two levels: **confirm** for any
@@ -453,7 +462,8 @@ Proposed shape, for the chief to relay to ag-foundation's `app.*` domain.
 - Input: `{ url: string }` (≤ 8 KiB).
 - Output: `{ opened: true }`.
 - Errors: `invalid_input` (not a parseable URL, a scheme other than `http:`/`https:`, embedded
-  credentials `user:pass@`, or over the size bound), `user_declined`.
+  credentials `user:pass@`, or over the size bound), `user_declined`, `too_long` (the normalized URL
+  does not fit the confirmation, so it is refused rather than shown cut).
 - Main parses with the WHATWG URL parser and normalizes. It rejects every scheme but `http` and
   `https`. It then **always** shows a native confirmation that displays the exact normalized URL
   through the display-safe function (`docs/ui-spec.md` §8), with the host shown separately and
