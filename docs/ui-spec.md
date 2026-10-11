@@ -568,7 +568,7 @@ built from its own data (the folder name and path, display-safe). `user_declined
 untrusted and is not an error; the UI shows the prompt again only when the user next asks for a
 feature. `too_long` (a path too long for the dialog) is explained in words. Revoking trust takes
 effect at once and the session approvals for that root are cleared (`docs/agent-contract.md` §2);
-the UI refreshes from events, not by guessing.
+the UI refreshes from `workspace.stateChanged`, not by guessing.
 
 Tests: each of the three features, invoked by pointer, by keyboard shortcut and from the command
 palette in an untrusted folder, shows its own reason and never an empty or inert control; the file
@@ -967,13 +967,17 @@ minting a type-only brand. Therefore:
 
 - **Compile time:** a type-level test using Vitest's `expectTypeOf` (not `@ts-expect-error`, also
   banned) asserts that `ProseText` is not assignable to `LiteralText` and that each renderer's prop
-  type is exactly its brand. The package must still compile with declaration emit (the exported
-  types name private symbols); ag-foundation proves that in the first implementation commit.
-- **Run time:** each `LiteralText`-only renderer calls core's `isLiteralText(value)` on its prop and
-  throws a programmer error if it is false, so a fabricated or cast value (including one produced
-  by `as unknown as`) is caught in tests and in development builds.
-- **Tests include the fabrication case:** a plain object cast to `LiteralText` renders nothing and
-  throws, and a `ProseText` cannot reach an action block by any typed path.
+  type is exactly its brand. (Packages export source with `noEmit`, so declaration emit does not
+  constrain the private symbols.)
+- **Run time, always on:** each `LiteralText`-only renderer calls core's `isLiteralText(value)` on its
+  prop in every build, tests, development **and production**; there is no flag that disables it. It
+  **fails closed**: a value without the brand is never rendered. Instead the renderer shows the fixed
+  text "This content could not be displayed safely", reports a programmer error that carries no
+  content, and an approval card that hits this offers **Deny only**. A fabricated or cast value
+  (including one produced by `as unknown as`) is therefore caught everywhere.
+- **Tests include the fabrication case:** a plain object cast to `LiteralText` renders the
+  placeholder (in test and in a production-mode build), an approval card built on it offers only
+  Deny, and a `ProseText` cannot reach an action block by any typed path.
 
 The lint rule on importing `displaySafeProse` stays as the early signal, and a re-export through an
 allowed module or barrel cannot defeat the types or the run-time check.
@@ -1120,13 +1124,15 @@ untrusted string is built from it, never from the raw string.
   `1 blank line` / `N blank lines`, `1 combining mark` / `N combining marks`, `omitted` →
   `1 more character` / `N more characters`.
 - Pieces are joined with a single space, with no added punctuation, so the output is deterministic.
-- **The spoken form ends with a summary derived only from `stats` and `flags`**, never from the text:
-  `Summary: ` followed by the parts that apply, separated by `; ` and ending with a period:
-  `N characters shown as markers` (`1 character shown as a marker` when `stats.hidden` is 1; omitted
-  when it is 0), `text shortened` (when `stats.truncated`), and `possible look-alike characters`
-  (when `flags.mixedScript` or `flags.confusable`). With nothing to report there is no summary. Input
-  text can imitate a spoken marker word for word, but it can never come after the summary, so the
-  summary is the authoritative statement of what was hidden.
+- **The spoken form begins with a summary derived only from `stats` and `flags`**, never from the
+  text: `Summary: ` followed by the parts that apply, separated by `; ` and ending with a period, then
+  a space and the pieces. Parts: `N characters shown as markers` (`1 character shown as a marker`
+  when `stats.hidden` is 1; omitted when it is 0), `text shortened` (when `stats.truncated`), and
+  `possible look-alike characters` (when `flags.mixedScript` or `flags.confusable`). With nothing to
+  report there is no summary. It leads because screen-reader users often stop listening to a long
+  name before its end. Input text can imitate a spoken marker word for word, but a prefix is
+  unreachable by input and exists only from `stats`/`flags`, so it is the authoritative statement of
+  what was hidden.
 - The visible chips are `aria-hidden`, so a marker is not read twice. The tooltip uses the same
   string.
 - The raw string remains the only input for paths, IPC and keys. The spoken form is for people.
@@ -1134,13 +1140,13 @@ untrusted string is built from it, never from the raw string.
 | Input | `describeForSpeech` |
 |---|---|
 | `ls` | `ls` |
-| `invoice\u202Efdp.exe` | `invoice hidden character U+202E fdp.exe Summary: 1 character shown as a marker.` |
+| `invoice\u202Efdp.exe` | `Summary: 1 character shown as a marker. invoice hidden character U+202E fdp.exe` |
 | `a` + 1 space + `b` | `a b` (no markers, no summary) |
-| `a` + 20 spaces + `b` | `a 20 spaces b Summary: 20 characters shown as markers.` |
-| `a\tb` | `a tab b Summary: 1 character shown as a marker.` |
+| `a` + 20 spaces + `b` | `Summary: 20 characters shown as markers. a 20 spaces b` |
+| `a\tb` | `Summary: 1 character shown as a marker. a tab b` |
 | `x\n` + 1 blank line + `y` | unchanged, no summary (at the limit) |
-| `x\n` + 5 blank lines + `y` | `x 5 blank lines y Summary: 5 characters shown as markers.` |
-| `e` + 5 × `\u0301` | `e 5 combining marks Summary: 5 characters shown as markers.` |
-| `p\u0430ypal` (Cyrillic а) | `pаypal Summary: possible look-alike characters.` |
-| 300 × `a`, `inline`, `maxChars: 256` | 256 `a`, `44 more characters`, `Summary: text shortened.` |
+| `x\n` + 5 blank lines + `y` | `Summary: 5 characters shown as markers. x 5 blank lines y` |
+| `e` + 5 × `\u0301` | `Summary: 5 characters shown as markers. e 5 combining marks` |
+| `p\u0430ypal` (Cyrillic а) | `Summary: possible look-alike characters. pаypal` |
+| 300 × `a`, `inline`, `maxChars: 256` | `Summary: text shortened.`, then 256 `a`, then `44 more characters` |
 | the literal text `hidden character U+202E` | unchanged, **no summary** (text cannot fake the summary) |
