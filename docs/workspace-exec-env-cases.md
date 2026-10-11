@@ -140,6 +140,10 @@ unusual and still worth a prompt.
 | 4.38 | redaction: for each §4 row, `EnvValue` is `plain` iff the key is on the allowlist and its value is valid; a non-benign request never shows a `plain` value for an offending key | all | holds |
 | 4.39 | `exec_shell` requests are always class `unknown` and always ask, so the env result adds a reason but never lowers the class | all | holds |
 | 4.40 | the allowlist and the never-benign table contain no key that the other table also matches differently (a test checks the two tables are disjoint) | all | holds |
+| 4.41 | no-drift: `createAllowlistEnvKeyClassifier(BENIGN_ENV_KEYS)` does not throw | all | holds (core cannot import this package, so this test lives here, next to the list) |
+| 4.42 | no-drift: every key in `BENIGN_ENV_KEYS` has `isBenign(key) === true` on the exported classifier, so the factory dropped nothing | all | holds |
+| 4.43 | the exported classifier is the factory's output: the module builds it through an injectable factory parameter, and a test passes a spy factory and asserts the exported classifier is exactly what the spy returned (a hand-written `isBenign` fails); a behavioral check also asserts `isBenign('__proto__')`, `isBenign('constructor')` and `isBenign('')` are false | all | holds |
+| 4.44 | `BENIGN_ENV_KEYS` has no duplicates, every entry matches `^[A-Za-z_][A-Za-z0-9_]*$`, and none matches the never-benign table in §3 | all | holds |
 
 The platform argument is passed explicitly in every test so the win32 rows run on macOS and Linux
 CI.
