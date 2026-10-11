@@ -103,9 +103,16 @@ export function createDependencyRuleSet(): IFlattenedRuleSet {
   };
 }
 
+/**
+ * Workspace build output. These are NOT excluded: `exclude` drops edges into matching modules,
+ * which blinded the rules to npm packages (and to workspace packages whose `exports` point at a
+ * build) that resolve under a `dist/` directory. `doNotFollow` keeps the edge, so every rule still
+ * sees it, but does not crawl the build output as source.
+ */
+const WORKSPACE_BUILD_OUTPUT = '^(apps|packages|tooling)/[^/]+/(dist|out|coverage)/';
+
 export const CRUISE_OPTIONS: ICruiseOptions = {
-  doNotFollow: { path: 'node_modules' },
-  exclude: { path: ['(^|/)dist/', '(^|/)out/', '(^|/)coverage/'] },
+  doNotFollow: { path: ['node_modules', WORKSPACE_BUILD_OUTPUT] },
   tsPreCompilationDeps: true,
   enhancedResolveOptions: {
     exportsFields: ['exports'],
