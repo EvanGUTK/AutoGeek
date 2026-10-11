@@ -64,7 +64,8 @@ const TokenResponseSchema = z.looseObject({
 /** RFC 6749 §5.2. */
 const ErrorResponseSchema = z.looseObject({ error: z.string() });
 
-function assertTokenEndpoint(endpoint: string): void {
+/** Throws RangeError unless `endpoint` is an absolute https URL without credentials. */
+export function assertTokenEndpoint(endpoint: string): void {
   let url: URL;
   try {
     url = new URL(endpoint);
