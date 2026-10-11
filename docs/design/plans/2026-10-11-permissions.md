@@ -163,6 +163,17 @@ Nothing else in core is touched.
 
   This is an interface only. ag-workspace's tests own the table, and core has no runtime code
   for it.
+- In the same file, under the same grant (chief):
+  - `type ExecVectorSignal = { type: 'changed' | 'unhealthy' | 'healthy' }`, with no paths and
+    no repository-controlled strings;
+  - `interface ExecVectorChangeSource { subscribe(rootKey: string, cb: (s: ExecVectorSignal) => void): () => void }`.
+
+  The doc comment says:
+  - raw fs events from any cause;
+  - `healthy` is emitted only after a full rescan;
+  - the consumer treats a root as unhealthy until its first `healthy`;
+  - the signal is asynchronous and therefore defense in depth. The three gate and loop
+    triggers are the race-free primary.
 - [ ] **Step 1: Write the failing tests:**
   - `CI` benign and `ci` not, when only `CI` is allowlisted;
   - unknown → false;
@@ -402,7 +413,7 @@ alongside.
     `Bearer\s+\S+`, `sk-[A-Za-z0-9_-]{16,}`, `gh[pousr]_[A-Za-z0-9]{20,}`, `AKIA[0-9A-Z]{16}`,
     `(?i)(password|passwd|secret|token|api[_-]?key)=[^\s&]+`, `xox[baprs]-[A-Za-z0-9-]{10,}`.
     If foundation ships a core redactor, use it instead and delete this file.
-  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write' | 'exec_vector_exec' | 'work_tree_mutated'; count: number })`
+  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write' | 'exec_vector_exec' | 'work_tree_mutated' | 'exec_vector_changed' | 'watcher_unhealthy'; count: number })`
   - `toAuditAction(action: PermissionAction): AuditAction`: `diff` is replaced by
     `diffBytes: number`. Every plain `env` value, `command`, `argv` element and `url` goes through
     `redactSecrets`. `{kind:'redacted'}` env values stay as they are.
@@ -527,6 +538,38 @@ owner of each run.
   - one per rule above;
   - `approval_resolved is emitted exactly once per approval on every path`.
 - [ ] **Steps 2–4**, **Step 5: Commit** `feat(permissions): add approval broker for the permissions channels`.
+
+### Task 9b: Exec-grant guard for the change source (required before M3 ships; may land after slice 1)
+
+**Files:** Create `src/grants/exec-grant-guard.ts`; Test alongside.
+
+**Interfaces:**
+- Consumes: `ExecVectorChangeSource` (core), `SessionGrantStore` (Task 5), `AuditSink` (Task 6).
+- Produces: `createExecGrantGuard(deps: { source: ExecVectorChangeSource; grants: SessionGrantStore; audit: AuditSink; onWarning(code: 'audit_failed', cause: string): void }): ExecGrantGuard`
+- `interface ExecGrantGuard { watch(rootKey: string): () => void; isBlocked(rootKey: string): boolean }`
+
+Behavior:
+- A root starts **blocked** at `watch()` and stays blocked until its first `healthy` signal.
+- `changed` → `clearExec(rootKey)`, audit `grants_cleared` / `exec_vector_changed`.
+- `unhealthy` → `clearExec`, audit `watcher_unhealthy`, then blocked.
+- `healthy` → unblocked.
+
+The gate takes the guard as a required dep:
+- while `isBlocked(rootKey)`, exec/exec_shell session grants never match;
+- `offered` for exec/exec_shell omits `'session'`.
+
+desktop calls `watch(rootKey)` on root open and the returned unsubscribe on root change. Root
+change already clears all grants (contract §11).
+
+- [ ] **Step 1: Write the failing tests** (chief's list):
+  - `a changed signal clears that root's exec grants`;
+  - `a signal for another root clears nothing`;
+  - `unhealthy clears and blocks grant matching until healthy`;
+  - `root starts blocked until first healthy`;
+  - `blocked root offers no session for exec`;
+  - `fs and mcp grants survive`;
+  - `unsubscribe stops processing`.
+- [ ] **Steps 2–5**, then commit `feat(permissions): clear exec grants on exec-vector change signals`.
 
 ### Task 10: Injection-invariant property tests, and the public surface
 
