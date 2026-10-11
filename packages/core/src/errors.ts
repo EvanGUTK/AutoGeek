@@ -1,0 +1,113 @@
+import { z } from 'zod';
+import { JsonValueSchema } from './json.ts';
+import type { JsonValue } from './json.ts';
+
+/**
+ * `CoreError` is the CROSS-BOUNDARY error envelope: IPC results, tool results and agent events
+ * all carry it. It is deliberately small and closed.
+ *
+ * Domain error types keep their own richer taxonomy and are mapped INTO a `CoreError` at the
+ * boundary, never replaced by it:
+ * - `ProviderError`: kind `aborted` -> `cancelled`, `timeout` -> `timeout`, anything unexpected
+ *   -> `internal`. The owning package decides the rest of its table and tests it.
+ * - Auth/vault failures -> `secure_storage_unavailable` or `internal` as appropriate.
+ * Vendor text, file contents, key material and `ProviderError.detail` never cross.
+ *
+ * Invariant: `message` is a constant per code (`ERROR_MESSAGES`) and is safe to display and log.
+ * It is never interpolated with user content, paths, file contents, vendor text or secrets. All
+ * variable information goes in `details`, which must be JSON-serializable and safe to show.
+ */
+export const ERROR_CODES = [
+  // Input and addressing
+  'invalid_input',
+  'unauthorized_sender',
+  'not_found',
+  'unknown_key',
+  'no_longer_pending',
+  'conflict',
+  'too_large',
+  'unsupported',
+  // Workspace and permission boundaries
+  'outside_workspace',
+  'sensitive_path',
+  'untrusted_workspace',
+  'permission_denied',
+  'secure_storage_unavailable',
+  // Operation lifecycle
+  'cancelled',
+  'timeout',
+  'unavailable',
+  'io',
+  'internal',
+] as const;
+
+export const ErrorCodeSchema = z.enum(ERROR_CODES);
+export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
+
+export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
+  invalid_input: 'The input was invalid.',
+  unauthorized_sender: 'The caller is not authorized.',
+  not_found: 'The requested item was not found.',
+  unknown_key: 'The key is not recognized.',
+  no_longer_pending: 'The request is no longer pending.',
+  conflict: 'The item changed since it was last read.',
+  too_large: 'The item exceeds the allowed size.',
+  unsupported: 'The operation is not supported.',
+  outside_workspace: 'The path is outside the trusted workspace.',
+  sensitive_path: 'The path is sensitive and was not approved.',
+  untrusted_workspace: 'The workspace is not trusted.',
+  permission_denied: 'Permission was denied.',
+  secure_storage_unavailable: 'Secure credential storage is unavailable.',
+  cancelled: 'The operation was cancelled.',
+  timeout: 'The operation timed out.',
+  unavailable: 'The service is unavailable.',
+  io: 'An input/output error occurred.',
+  internal: 'An internal error occurred.',
+};
+
+export const CoreErrorSchema = z
+  .strictObject({
+    code: ErrorCodeSchema,
+    message: z.string(),
+    details: JsonValueSchema.optional(),
+  })
+  .refine((error) => error.message === ERROR_MESSAGES[error.code], {
+    message: 'message must be the constant message for its code',
+    path: ['message'],
+  });
+
+export type CoreError = z.infer<typeof CoreErrorSchema>;
+
+export function coreError(code: ErrorCode, details?: JsonValue): CoreError {
+  const message = ERROR_MESSAGES[code];
+  return details === undefined ? { code, message } : { code, message, details };
+}
+
+/**
+ * Converts a zod failure to `invalid_input`. Only issue paths and zod's own messages are kept;
+ * the rejected input is never echoed, because it may be (or contain) a secret.
+ */
+export function fromZodError(error: z.ZodError): CoreError {
+  return coreError('invalid_input', {
+    issues: error.issues.map((issue) => ({
+      path: issue.path.map(String).join('.'),
+      message: issue.message,
+    })),
+  });
+}
+
+export function isAbortError(thrown: unknown): boolean {
+  return thrown instanceof Error && thrown.name === 'AbortError';
+}
+
+/**
+ * Last-resort conversion of a thrown value at a process boundary. Aborts become `cancelled`;
+ * everything else is `internal` carrying only a correlation id (the caller logs the original
+ * error under that id). The thrown message is dropped on purpose: it may contain secrets.
+ */
+export function toCoreError(thrown: unknown, correlationId: string): CoreError {
+  if (isAbortError(thrown)) {
+    return coreError('cancelled');
+  }
+  return coreError('internal', { ref: correlationId });
+}
