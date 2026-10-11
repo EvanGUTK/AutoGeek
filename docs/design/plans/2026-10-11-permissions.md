@@ -95,7 +95,9 @@ its own ag-reviewer request:
     approval docs. Argv `exec` grants are unaffected.
 - **Change tap (slice 1c, chief-approved port #3):**
   - `ExecVectorChangeTap.subscribe` events `changed` / `degraded` clear that root's exec grants
-    (audit `exec_vector_changed` / `watcher_unhealthy`);
+    (audit `exec_vector_changed` / `watcher_degraded`). `watcher_unhealthy` is reserved for
+    failures found at check time: `isHealthy` false, a throw, a flush timeout or failure, or a
+    missing tap (contract §12.2 item 4);
   - before any exec / exec_shell allow that would come from a **session grant**, the gate calls
     `isHealthy` and then `await tap.flush(rootKey, signal)`, bounded by `tapFlushTimeoutMs`
     (default 1_500) combined with the request signal, and re-evaluates;
@@ -396,7 +398,7 @@ alongside.
     `Bearer\s+\S+`, `sk-[A-Za-z0-9_-]{16,}`, `gh[pousr]_[A-Za-z0-9]{20,}`, `AKIA[0-9A-Z]{16}`,
     `(?i)(password|passwd|secret|token|api[_-]?key)=[^\s&]+`, `xox[baprs]-[A-Za-z0-9-]{10,}`.
     If foundation ships a core redactor, use it instead and delete this file.
-  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write' | 'exec_vector_exec' | 'work_tree_mutated' | 'exec_vector_changed' | 'watcher_unhealthy'; count: number })`
+  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write' | 'exec_vector_exec' | 'work_tree_mutated' | 'exec_vector_changed' | 'watcher_degraded' | 'watcher_unhealthy'; count: number })`
   - `toAuditAction(action: PermissionAction): AuditAction`: `diff` is replaced by
     `diffBytes: number`. Every plain `env` value, `command`, `argv` element and `url` goes through
     `redactSecrets`. `{kind:'redacted'}` env values stay as they are.
@@ -441,7 +443,9 @@ alongside.
     - `load(rootKey)` returns `global` followed by `roots[rootKey]`.
   - `describeRuleForConfirm(rule: PolicyRuleInput): string`: the literal rule, plus the exact
     contract phrases "Allow any command beginning with: " (`argv_prefix`, one element per line)
-    and "with ANY input" (`mcp` without `input`). For `allow` rules of kind `argv`,
+    and "with ANY input" (`mcp` without `input`). It returns
+    `Result<string, { code: 'too_long' }>`: text over `CONFIRM_TEXT_MAX` (16 KiB, a named
+    constant) is rejected, never truncated (contract §6, `addRule` → `too_long`). For `allow` rules of kind `argv`,
     `argv_prefix` or `shell`, it adds core's `PERSISTENT_EXEC_RULE_NOTICE` (Step 0 below). The
     string is imported, never retyped, so main's confirm and the renderer's rule editor show one
     string.
@@ -472,6 +476,7 @@ alongside.
     byte-identical);
   - a concurrent `add` doesn't lose a rule (serialized writes);
   - confirm-text snapshots for argv_prefix and mcp any-input;
+  - `oversized confirm text is too_long, never truncated` (a 256-element argv rule);
   - `command allow rules warn that they survive script changes`: argv, argv_prefix and shell
     allow rules contain `PERSISTENT_EXEC_RULE_NOTICE` (asserted by importing the constant),
     while deny/ask rules and path/url/mcp rules don't.
@@ -524,7 +529,7 @@ audit append fails, return deny `policy` / `audit_failed`.
 **Interfaces:**
 - Produces:
   - `createApprovalBroker(deps: { emit(e: BrokerEvent): void; grants: SessionGrantStore; rules: RuleStore; workspace: …same as gate…; confirm(text: string): Promise<boolean>; audit: AuditSink }): ApprovalBroker`
-  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; listInactiveRules(previousRootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule; reason: 'identity_changed' }[], RuleStoreError>>; reactivateRules(args: { from: string; ruleIds: readonly string[] }): Promise<Result<{ count: number; dropped: readonly { ruleId: string; reason: 'invalid_rule' }[] }, RuleStoreError | { code: 'not_found' | 'too_many' | 'user_declined' }>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
+  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; listInactiveRules(previousRootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule; reason: 'identity_changed' }[], RuleStoreError>>; reactivateRules(args: { from: string; ruleIds: readonly string[] }): Promise<Result<{ count: number; dropped: readonly { ruleId: string; reason: 'invalid_rule' }[] }, RuleStoreError | { code: 'not_found' | 'too_many' | 'user_declined' | 'too_long' }>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' | 'too_long' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
   - `type BrokerEvent = { type: 'approval_requested'; prompt: ApprovalPrompt } | { type: 'approval_resolved'; approvalId: string; outcome: 'allowed_once' | 'allowed_session' | 'denied' | 'run_stopped' }`
 
 Rules:
@@ -533,7 +538,8 @@ Rules:
 - A second `respond` → `no_longer_pending`.
 - An aborted signal resolves the prompt as `run_stopped` and removes it.
 - `addRule` with effect allow calls `confirm(describeRuleForConfirm(input))` first: false →
-  `user_declined`, and nothing is written.
+  `user_declined`, and nothing is written. If `describeRuleForConfirm` is `too_long`, `addRule`
+  returns `too_long` without any confirm or write.
 - Deny/ask rules skip the confirm.
 - Rule changes and revocations are audited. `clearSessionGrants` writes one `grants_cleared`
   entry. desktop calls it on root change and on `setTrust(false)` (contract §11).
@@ -551,6 +557,9 @@ Rules:
      `rules.reactivate({ from, to: currentRootKey, ruleIds: validIds })`, then audit
      `rules_reactivated` with the moved and dropped ids.
   4. If every named rule is invalid, there's no confirm. Return `{ count: 0, dropped }`.
+  5. If the combined confirm text would exceed `CONFIRM_TEXT_MAX`, return `too_long`
+     (proposed to the chief for contract §6). There's no confirm and no change, and the UI
+     retries with fewer rules.
   The audit `kind` union gains `'rules_quarantined' | 'rules_reactivated'` with
   `{ rootKeys | from, to, count }`.
 
