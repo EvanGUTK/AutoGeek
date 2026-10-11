@@ -42,7 +42,7 @@ object so editor and chrome cannot drift (brief item 3, "theme sync").
 `data-theme` is set on `<html>` before first paint. An inline script in `index.html` is blocked by the
 strict CSP, so main passes the validated initial theme through `webPreferences.additionalArguments`;
 the sandboxed preload reads it from `process.argv`, re-validates it against the theme enum, and
-exposes it as a synchronous bridge value (`docs/ipc-channels.md` §9.5). If that route proves
+exposes it as a synchronous bridge value (`docs/ipc-channels.md` §9.6). If that route proves
 infeasible, the stylesheet follows `@media (prefers-color-scheme)` and the attribute only
 overrides. `color-scheme` is set to match so native scrollbars and form controls follow.
 
