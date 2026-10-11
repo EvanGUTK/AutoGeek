@@ -16,7 +16,7 @@ untrusted data.
    through the `PermissionGate`. Tool-list changes (`listChanged`) handled live.
 4. **Resources & prompts** bridged for @-mentions and slash commands; result size caps with
    explicit truncation markers.
-5. **OAuth for remote servers** reusing the `@autogeek/auth` PKCE engine (inject; do not copy).
+5. **OAuth for remote servers** through an injected `OAuthPort` (interface defined in `@autogeek/core`, implemented by `@autogeek/auth`'s PKCE engine, wired in `apps/desktop`). `mcp` has NO dependency edge to `auth` (ARCHITECTURE.md §4, LEARNINGS L-005); agree the port shape with ag-auth, and the chief signs off on it.
 6. **Config:** user + project `mcp.json`, zod-validated; project-level servers require explicit
    workspace-trust approval before first spawn; show the exact command to be run.
 7. **Conformance tests** against an in-repo reference server (stdio + HTTP): hang, crash, huge

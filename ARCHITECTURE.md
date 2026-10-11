@@ -87,7 +87,9 @@ docs/
 **Dependency rules** (enforced by an ESLint boundary rule + `pnpm verify`):
 `core` ← everything. `permissions` ← `tools`, `agent`, `mcp`. `workspace` ← `tools`, `agent`.
 `providers` ← `agent`. `auth` ← `providers`. `apps/desktop` may import any package; no package
-imports `apps/desktop`. No cycles.
+imports `apps/desktop`. No cycles. A capability one package needs from another that has no §4 edge
+is injected through a port (interface) defined in `core` and wired in `apps/desktop`; edges are never
+added to make that work (e.g. `mcp` gets OAuth via `core`'s `OAuthPort`, implemented by `auth`).
 
 ## 5. Key interfaces (owned by `@autogeek/core`)
 
