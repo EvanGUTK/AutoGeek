@@ -74,7 +74,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `conflict` | Stale write (file changed on disk since it was read) |
 | `too_large` | Exceeds a size cap |
 | `cancelled` | Operation was cancelled |
-| `domain_error` | A domain-typed failure from an owner's error taxonomy (`AuthError`, `ProviderError`); `details` carries `{ domain, reason }`, validated by the owner's schema. See §9.3 |
+| `domain_error` | A failure from an owner's own error taxonomy (`AuthError`, `ProviderError`). The error stays `{ code, message, details? }` (no new `IpcError` variant); `details` is `{ domain: 'auth' \| 'provider', kind: <closed enum from the owner's error type> }`, validated by that channel's own `errorDetails` schema. `message` is the owner's safe constant for that kind. Vendor `detail` text never crosses |
 | `unknown_key` | Setting key not in the allowlist |
 | `no_longer_pending` | Approval already resolved or its run ended |
 | `unavailable` | Subsystem not ready |
@@ -363,13 +363,14 @@ CredentialRef = {          // .strict()
 | `auth.getUsage` | `{ id, month: 'YYYY-MM' }` | `{ inputTokens, outputTokens, cachedTokens, costUsdMicros }` |
 
 Errors: ag-auth returns `Result<_, AuthError>`; over this bridge they arrive as `domain_error` with
-`details: { domain: 'auth', reason: AuthErrorCode }`. `AuthErrorCode` is ag-auth's closed set
+`details: { domain: 'auth', kind: AuthErrorCode }` (each `auth.*` channel declares this as its zod
+`errorDetails` schema). `AuthErrorCode` is ag-auth's closed set
 (`encryption_unavailable`, `insecure_backend`, `store_corrupt`, `store_io`, `not_found`,
 `duplicate`, `validation_failed`, `validator_unreachable`, `oauth_state_mismatch`,
 `oauth_timeout`, `oauth_aborted`, `oauth_provider_error`, `refresh_failed`, `revocation_failed`).
 Messages are constant strings per code and never contain a secret; the renderer keeps its own
-user-facing text keyed on `reason` (an exhaustive switch, so a new code is a compile error, not a
-blank toast). Universal codes (`invalid_input`, `unauthorized_sender`, `unavailable`, `internal`)
+user-facing text keyed on `details.kind` (an exhaustive switch with a typed default, so a new code is
+a compile error, not a blank toast). Universal codes (`invalid_input`, `unauthorized_sender`, `unavailable`, `internal`)
 also apply.
 
 Renderer behavior and constraints:
@@ -383,7 +384,7 @@ Renderer behavior and constraints:
   `settings.changed`; the renderer does not guess.
 - `auth.oauth.begin` is a long-lived invoke (the user is in their browser). The UI shows a waiting
   state with Cancel wired to `auth.oauth.cancel`. Per D-002, subscription OAuth is off until the
-  chief records the terms; the UI offers OAuth only for providers where it is enabled (see §9.7).
+  chief records the terms; the UI offers OAuth only where the provider catalog lists it (see §9.7).
   OAuth tokens never cross the bridge.
 - The spend meter reads `auth.getUsage` for the selected credential and the current UTC month, and
   the live per-turn count from `agent.event` usage. Cap *enforcement* is the agent budget's job; the
@@ -397,11 +398,10 @@ Renderer behavior and constraints:
   `displayName`, `contextWindow: number | null`, `maxOutputTokens: number | null`,
   `capabilities: { tools, vision, reasoning, promptCaching }` each `'yes' | 'no' | 'unknown'`,
   optional `pricing`, `source: 'api' | 'catalog' | 'default'`).
-- Errors: `not_found` (credential); `domain_error` with `details: { domain: 'provider', reason: ProviderErrorKind }`
-  (e.g. `auth`, `network`, `rate_limit`). `ProviderError.message` is constant per kind. The renderer
-  needs `kind`, `message`, `retryable`, and optionally `retryAfterMs` and `requestId`; it does not
-  need `detail` (the redacted vendor excerpt is for logs) and ag-providers/ag-agent need not forward
-  it.
+- Errors: `not_found` (credential); `domain_error` with `details: { domain: 'provider', kind: ProviderErrorKind }`
+  (e.g. `auth`, `network`, `quota`). `message` is the constant for that kind. Nothing else crosses:
+  not `detail` (vendor body excerpt), not `requestId`. The renderer derives "retryable" from
+  `kind` with its own table that mirrors `docs/model-contract.md` §4.
 - The call runs in main with the credential resolved just-in-time. A stale result for a credential
   that is no longer selected is ignored by the UI; there is no cancel channel unless ag-providers
   wants one.
@@ -427,10 +427,11 @@ Stating the negative space so reviewers can hold the line:
    document is updated to match in the same change, or marked superseded.
 2. **Approval payload.** The chief is asking ag-agent to accept §5's required/optional split, and
    to define `ApprovalAction` together with the gate action union in `core`.
-3. **`IpcError` and domain errors** (ag-foundation). The `domain_error` shape in §1.3 carries
-   `AuthError` and `ProviderError` reasons through the bridge. The renderer needs them as a typed,
-   exhaustively switchable value, so the `IpcError` type should be a discriminated union with a
-   domain variant rather than a free string. I recommend `{ code: 'domain_error'; domain: 'auth' | 'provider'; reason: <that domain's code enum> }`.
+3. **Domain errors** (decided by the chief). No new `IpcError` variant: the error stays
+   `{ code, message, details? }` and each channel declares its own zod `errorDetails` schema. For
+   domain errors `details = { domain: 'auth' | 'provider', kind: <closed enum> }`. ag-foundation has
+   been told. Still to confirm with ag-foundation: that `domain_error` is the shared `code` value
+   for these (as drawn in §1.3), rather than each channel naming its own code.
 4. **Native confirmation for protected paths on `workspace.readFile`/`writeFile`**
    (ag-workspace). A dead-end error on editing `.env` is bad UX, but a renderer-supplied "I
    confirmed" flag is spoofable by a compromised renderer. Proposal: main shows a native modal
@@ -448,8 +449,12 @@ Stating the negative space so reviewers can hold the line:
    (`docs/ui-spec.md` §3.9). The Stop button is also always visible whenever a run is active. When
    the terminal has focus, `Ctrl+C` is never intercepted: it goes to the PTY. The terminal installs a
    key handler that lets only registered app chords through, and `Ctrl+C` is not one.
-7. **Which auth kinds a provider offers.** The UI needs to know, per provider, whether it supports
-   API key, OAuth (and whether OAuth is enabled per D-002), or none (local). I prefer a static
-   provider catalog in `core` over a channel, since it is not user data (ag-auth / ag-providers).
+7. **Which auth kinds a provider offers** (decided by the chief). A static provider catalog in
+   `core`, as pure data plus zod, at `packages/core/src/providers/catalog.ts`: `id`, `displayName`,
+   `authKinds`, optional key-help URL. Not a channel. ag-providers owns the file; ag-auth reviews
+   `authKinds`, and per D-002 only provider-permitted auth kinds are listed (subscription OAuth is
+   not). The UI offers exactly the kinds the catalog lists; the key-help URL is shown as plain
+   text (no renderer-side navigation; opening it externally would need a channel I have not
+   requested).
 8. **Terminal water marks and the large-file `maxBytes` default** — ag-workspace to choose and
    test; the renderer takes them as given.
