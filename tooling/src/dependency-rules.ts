@@ -45,6 +45,11 @@ function layerRule(name: PackageName): IForbiddenRuleType {
   };
 }
 
+/** The one file per package that is build configuration rather than product code. */
+const VITEST_CONFIG_FILE = '^(packages|apps)/[^/]+/vitest\\.config\\.ts$';
+/** tooling's public Vitest entry point (exported as `@autogeek/tooling/vitest`). */
+const TOOLING_VITEST_ENTRY = '^tooling/src/vitest/config\\.ts$';
+
 const PUBLIC_API_ENTRY = '^packages/[^/]+/src/index\\.ts$';
 
 export function createDependencyRuleSet(): IFlattenedRuleSet {
@@ -83,10 +88,19 @@ export function createDependencyRuleSet(): IFlattenedRuleSet {
       },
       {
         name: 'nothing-imports-tooling',
-        comment: 'Product code must not depend on repo tooling.',
+        comment:
+          'Product code must not depend on repo tooling. The only exception is a package-root file named exactly vitest.config.ts (see config-imports-only-tooling-entry).',
         severity: 'error',
-        from: { path: '^(packages|apps)/' },
+        from: { path: '^(packages|apps)/', pathNot: VITEST_CONFIG_FILE },
         to: { path: '^tooling/' },
+      },
+      {
+        name: 'config-imports-only-tooling-entry',
+        comment:
+          'A package vitest.config.ts may import only the shared Vitest config entry point of tooling, never its internals.',
+        severity: 'error',
+        from: { path: VITEST_CONFIG_FILE },
+        to: { path: '^tooling/', pathNot: TOOLING_VITEST_ENTRY },
       },
       {
         name: 'public-api-only',
