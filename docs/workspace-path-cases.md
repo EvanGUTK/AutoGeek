@@ -307,9 +307,11 @@ Many paths match more than one row (`.npmrc` is 7.11 and 7a.9, `.envrc` is 7.3 a
 rule: `access` is the most restrictive match (`deny` over `confirm` over `free`); `elevated` is the
 OR of all matches; `category` is the first match in this fixed order: `autogeek_internal`,
 `git_internal`, `git_config`/`git_hook`, `private_key`, `credential_dir`, `credential_file`,
-`env_file`, `exec_vector`, `env_template`. A test enumerates every multi-match path in the rule
-data and asserts the combined result, alongside the check that each row has an explicit `access`
-and `elevated`.
+`env_file`, `exec_vector`, `env_template`. Only the matched rules that restrict the operation at
+hand (or are exec vectors, for a write) compete, so a read of `.git/FETCH_HEAD` reports
+`git_remote_credentials` and a write reports `git_internal`. A test enumerates every multi-match
+path in the rule data and asserts the combined result, alongside the check that each row has an
+explicit `access` and `elevated`.
 
 The classifier is a pure function of `(canonicalRelativePath)` with a data-driven rule list, so the
 permissions package can show the matched rule in the approval prompt.
