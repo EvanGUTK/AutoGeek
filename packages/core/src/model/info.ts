@@ -15,10 +15,15 @@ const UsdMicrosPerMTok = z.number().int().nonnegative();
  * providers package exports `effectiveLimits(info)` with conservative numbers for unknowns
  * (context 8_192, max output 4_096) so unknown local models stay safe.
  *
- * `pricing` is integer USD micros per million tokens (so $3.00 is 3_000_000), which makes the
- * cost of `n` tokens `n * price / 1_000_000` micro-USD. This deliberately differs from the float
- * USD in docs/model-contract.md §5, following the chief's rule that money in contracts is integer
- * micros. Absent pricing means unknown: spend caps then warn instead of computing.
+ * `pricing` is integer USD micros per million tokens (so $3.00 is 3_000_000). This deliberately
+ * differs from the float USD in docs/model-contract.md §5, following the chief's rule that money
+ * in contracts is integer micros. Absent pricing means unknown: spend caps then warn instead of
+ * computing.
+ *
+ * Cost arithmetic, wherever it is computed (agent, providers): for each usage event,
+ * `cost = ceil(tokens * priceMicrosPer1M / 1_000_000)` micro-USD per priced token count. It ROUNDS
+ * UP so spend caps over-count rather than under-count, and uses integer (BigInt) math, never
+ * floats.
  */
 export const ModelInfoSchema = z.strictObject({
   providerId: z.string().min(1),
