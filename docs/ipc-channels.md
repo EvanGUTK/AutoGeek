@@ -90,20 +90,30 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `unauthorized_sender` | Caller is not the expected window/frame |
 | `not_found` | Target does not exist (file, run, terminal, credential, approval) |
 | `outside_workspace` | Resolved path escapes the trusted root(s) |
-| `user_declined` | The user declined a native confirmation dialog shown by main (protected path, trust, saved allow rule) |
+| `user_declined` | The user declined a native confirmation dialog shown by main (protected path, trust, saved allow rule, endpoint change, rule reactivation) |
 | `protected_path` | Hard-denied **write** to repository-integrity paths: everything under `.git/` except the confirm allowlist (§3 `workspace.readFile`); no dialog and no override |
 | `untrusted_workspace` | Operation needs a trusted workspace |
+| `too_many` | A batch input exceeds its bound (`permissions.reactivateRules` accepts 1..50 ids) |
+| `root_unavailable` | The open folder is unavailable (`root.available` is false); every file, git, terminal and agent operation is refused by the services themselves, not only per channel |
+| `secure_storage_unavailable` | No secure credential storage: `details: { domain: 'auth', kind: 'encryption_unavailable' \| 'insecure_backend' }` |
 | `too_long` | The text main must put in a native confirmation exceeds the dialog bound (`docs/ui-spec.md` §8); the operation is refused, never shown cut |
 | `conflict` | Stale write or run state conflict; `details.kind` says which (`paths_changed`, `run_active`, a disk change) |
 | `too_large` | Exceeds a size cap |
 | `cancelled` | Operation was cancelled |
-| `domain_error` | A failure from an owner's own error taxonomy (`AuthError`, `ProviderError`). The error stays `{ code, message, details? }` (no new `IpcError` variant); `details` is `{ domain: 'auth' \| 'provider', kind: <closed enum from the owner's error type> }`, validated by that channel's own `errorDetails` schema. `message` is the owner's safe constant for that kind. Vendor `detail` text never crosses |
+| `domain_error` | A failure whose useful explanation is specific to an owner's domain (`AuthError`, `ProviderError`). The error stays `{ code, message, details? }` (no new `IpcError` variant); `details` is `{ domain: 'auth' \| 'provider', kind: <closed enum from the owner's error type> }`, validated by that channel's own `errorDetails` schema. `message` is the owner's safe constant for that kind. Vendor `detail` text never crosses |
 | `invalid_base_url` | A base URL that cannot be used (unparseable, wrong scheme, embedded credentials, non-loopback `http:` where not allowed) |
 | `base_url_not_editable` | The provider's endpoint is fixed by the catalog |
 | `unknown_key` | Setting key not in the allowlist |
 | `no_longer_pending` | Approval already resolved or its run ended |
 | `unavailable` | Subsystem not ready |
 | `internal` | Bug or unexpected failure (no detail beyond a correlation id) |
+
+**Principle for mapping domain errors.** A condition that does not depend on the domain maps to the
+universal code (`not_found`, `invalid_base_url`, `base_url_not_editable`, `user_declined`, `too_long`).
+A condition whose useful explanation is domain-specific stays a domain kind, or rides as
+`details { domain, kind }` on a universal code (`secure_storage_unavailable`). A universal code never
+also appears as a `domain_error` kind. Messages are core's constant per code; for `domain_error` and
+`secure_storage_unavailable` the UI keys its own text on `details.kind`.
 
 ### 1.4 Ownership
 
@@ -196,15 +206,22 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 
 ### `workspace.openFolder`
 - Input: `{}` (the renderer cannot supply a path; main shows the native dialog).
-- Output: `{ root: { name: string; trusted: boolean } } | null` (`null` = user cancelled).
+- Output: `{ root: WorkspaceRoot; notice?: 'identity_changed' } | null` (`null` = user cancelled).
   The absolute path is not returned, only a display name.
-- Errors: none beyond universal. New roots start untrusted until `workspace.setTrust`.
+- Trust is bound to the folder's identity. A folder whose identity differs from the one that was
+  trusted opens as a NEW untrusted folder with its remembered root rules made inactive
+  (`docs/agent-contract.md` §12.3) and `notice: 'identity_changed'`, a closed enum shown once as "This
+  folder looks different from the one you trusted". A `stat` error or an unreadable trust record also
+  opens the folder untrusted, with no notice. New roots start untrusted until `workspace.setTrust`.
+- Errors: none beyond universal.
 
 ### `workspace.getState`
 - Input: `{}`. Output: `{ workspace: WorkspaceState; watch: WatchState }`, which **mirrors the two
   event payloads** so one `applyIfNewer` helper handles both streams:
-  - `WorkspaceState = { seq: number; root: { name: string; trusted: boolean } | null }`, the same shape
-    as the `workspace.stateChanged` payload.
+  - `WorkspaceState = { seq: number; root: WorkspaceRoot | null; notice?: 'identity_changed' }`, the
+    same shape as the `workspace.stateChanged` payload, where
+    `WorkspaceRoot = { name: string; trusted: boolean; available: true } | { name: string; trusted: boolean; available: false; reason: 'missing' | 'identity_changed' }`
+    (`reason` is absent when `available` is true; `root: null` means no folder is open).
   - `WatchState = { seq: number } & ({ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' })`,
     the same shape as the `workspace.fsWatchState` payload.
 - Each `seq` is the sequence of the latest event of its own stream reflected in that part. Main reads
@@ -218,9 +235,9 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   goes through the same store transition.
 
 ### Event `workspace.stateChanged`
-- Payload: `WorkspaceState` (`{ seq, root }`). Emitted whenever the open folder or its trust changes
-  (`openFolder`, `setTrust`, closing the folder), so trust changes have an event like everything else
-  that is state. It is paired with `getState` the same way as the other state events: subscribe and
+- Payload: `WorkspaceState` (`{ seq, root, notice? }`). Emitted whenever the open folder, its trust,
+  its availability or the notice changes (`openFolder`, `setTrust`, closing the folder, the folder
+  vanishing or returning), so these have an event like everything else that is state. It is paired with `getState` the same way as the other state events: subscribe and
   buffer, call `getState`, apply `workspace`, then apply buffered events through `applyIfNewer`. This
   also lets a second view stay consistent after the roles are split (D-010).
   The event is approved by the chief and its shape is confirmed by ag-workspace. `stateChanged` and
@@ -229,6 +246,31 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   or trust, not when `setTrust` repeats the current value, and a declined `setTrust(true)`
   (`user_declined`) emits nothing. The store lives in `workspace` and desktop calls it from its
   `openFolder` and `setTrust` handlers, after the native dialogs.
+- **Unavailable folder.** When the folder vanishes (a drive unplugged, a mount dropped, a rename),
+  `root` keeps its name and trust with `available: false` and a closed `reason`. This goes through
+  the same store transition (one `seq` bump); `fsWatchState`'s `watch_error` is only watcher health
+  and prompts a `getState` call, so `getState`/`stateChanged` are authoritative for "the folder is
+  gone". While `available` is false every file, git, terminal and agent operation returns
+  `root_unavailable` from the service itself; in-flight git and terminal operations are aborted and
+  in-flight writes fail without a partial file.
+  - `reason: 'missing'`: the folder is gone for now. Trust is kept, and main keeps watching for it and
+    reconnects automatically after an identity check (same realpath, same `(dev, ino)` as recorded).
+  - `reason: 'identity_changed'`: a different folder now sits at that path. Trust is `false`, session
+    grants for the root are cleared, there is no auto-reconnect even if the original returns, and
+    only an explicit re-open plus a fresh trust confirmation clears it. A `missing` root that returns
+    as a different folder becomes `identity_changed` with one `seq` bump. A `missing` root that was
+    already untrusted still reports `missing`, so the UI never infers the reason from `trusted`.
+- **The notice lives in state.** `notice?: 'identity_changed'` is part of `WorkspaceState`, set by the
+  transition that opens a changed-identity folder or by a skipped launch restore, and cleared only by
+  transitions that bump `seq` (`setTrust` either way, `openFolder` of any folder, closing the
+  folder). `getState` never mutates it. The banner's "Hide" action is renderer-local and not stored,
+  so a reload shows it again from state; it is display-only.
+- **Launch restore** is desktop's, under these rules: the last folder reopens only if it exists and
+  its identity matches; otherwise it is never auto-opened and the app starts with `root: null`, with
+  the notice set when the identity changed (a missing or unreadable root starts with `root: null` and
+  no notice). Restore keeps the stored trust and never upgrades it, never starts or resumes an agent
+  run, and never reapplies session grants. The identity check finishes before the renderer sees any
+  state.
 
 ### `workspace.setTrust`
 - Input: `{ trusted: boolean }` (applies to the current root, set only from the trust-prompt UI).
@@ -443,6 +485,23 @@ on:
 5. Budgets come from the `agent.budgets` setting (§2), read by main at run start through an injected
    `budgetsFor()`. The native confirmation lives in the `settings.set` handler.
 
+### 5.5 Inactive rules and reactivation (folder identity)
+
+`permissions.listRules` returns `{ rules, inactive: Array<{ rule, reason: 'identity_changed' }> }`.
+When a folder opens with a changed identity, its root-scoped rules are quarantined: kept, but
+inactive, and they never apply (`docs/agent-contract.md` §12.3; global rules are unaffected).
+**Re-trusting a folder does not reactivate its rules.** Only `permissions.reactivateRules` does.
+
+`permissions.reactivateRules { ruleIds }` takes 1..50 ids and returns
+`{ count, dropped: Array<{ ruleId, reason: 'invalid_rule' }> }`. Errors: `not_found`, `too_many`,
+`too_long` (the combined confirmation text would exceed the bound, so the UI retries with fewer ids),
+`user_declined`. Main re-validates each rule; invalid ones stay inactive and come back in `dropped`.
+Main shows a native confirmation listing every valid rule literally (with the persistent-rule
+sentence for command allow rules). The move is all-or-nothing for the valid set; if every rule is
+invalid there is no confirmation and the reply is `{ count: 0, dropped }`. The renderer sends only the
+ids, never builds or previews the confirmation, and shows `dropped` to the user (for example "2
+rules could not be reactivated and stay inactive").
+
 ### 5.4 `permissions.addRule` and `too_long`
 
 `permissions.addRule` shows a native confirmation whose text is bounded (`docs/ui-spec.md` §8), so a
@@ -477,7 +536,8 @@ CredentialRef = {          // .strict()
 | Channel | Input | Output |
 |---|---|---|
 | `auth.list` | `{}` | `CredentialRef[]` |
-| `auth.addApiKey` | `{ providerId, label, secret }` | `CredentialRef` |
+| `auth.addApiKey` | `{ providerId, label, secret, baseUrl? }` | `CredentialRef` |
+| `auth.addKeyless` | `{ providerId, label, baseUrl }` | `CredentialRef` (`kind: 'none'`) |
 | `auth.validate` | `{ id }` | `{ ok: true }` |
 | `auth.rotateApiKey` | `{ id, secret }` | `CredentialRef` |
 | `auth.delete` | `{ id }` | `{ revoked: boolean }` |
@@ -486,20 +546,35 @@ CredentialRef = {          // .strict()
 | `auth.setMonthlyCap` | `{ id, capUsdMicros: number \| null }` | `CredentialRef` |
 | `auth.getUsage` | `{ id, month: 'YYYY-MM' }` | `{ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, costUsdMicros }` (aligned with D-004 / the model contract; §9.11) |
 
-Errors: ag-auth returns `Result<_, AuthError>`; over this bridge they arrive as `domain_error` with
-`details: { domain: 'auth', kind: AuthErrorCode }` (each `auth.*` channel declares this as its zod
-`errorDetails` schema). `AuthErrorCode` is ag-auth's closed set
-(`encryption_unavailable`, `insecure_backend`, `store_corrupt`, `store_io`, `not_found`,
-`duplicate`, `validation_failed`, `validator_unreachable`, `oauth_state_mismatch`,
-`oauth_timeout`, `oauth_aborted`, `oauth_provider_error`, `refresh_failed`, `revocation_failed`).
-Messages are constant strings per code and never contain a secret; the renderer keeps its own
-user-facing text keyed on `details.kind` (an exhaustive switch with a typed default, so a new code is
-a compile error, not a blank toast). Universal codes (`invalid_input`, `unauthorized_sender`, `unavailable`, `internal`)
-also apply.
+`baseUrl` is required on `auth.addApiKey` exactly when the provider catalog's endpoint is editable
+(`baseUrl.editable: true`); a missing or extra value is `invalid_base_url`. `auth.addKeyless` is
+allowed only when the catalog `acquisition` includes `'none'`, and it carries no secret, so
+`auth.addApiKey` and `auth.rotateApiKey` remain the only secret-carrying channels. Both add channels
+run the same main-built endpoint confirmation as `models.setBaseUrl` (§7.0.1), so they can also
+return `user_declined` and `too_long`; nothing is created in those cases, and the UI shows only the
+pending state and the result.
+
+**Errors.** ag-auth returns `Result<_, AuthError>`. At the bridge each kind maps by the principle in
+§1.3:
+
+| AuthError kind | Crosses as | `details` |
+|---|---|---|
+| `not_found`, `invalid_base_url`, `base_url_not_editable` | the same universal code | none |
+| `confirm_declined` | `user_declined` | none |
+| `confirm_too_long` | `too_long` | none |
+| `encryption_unavailable`, `insecure_backend` | `secure_storage_unavailable` | `{ domain: 'auth', kind }` |
+| `store_corrupt`, `store_io`, `duplicate`, `validation_failed`, `validator_unreachable`, `oauth_state_mismatch`, `oauth_timeout`, `oauth_aborted`, `oauth_provider_error`, `refresh_failed`, `revocation_failed` | `domain_error` | `{ domain: 'auth', kind }` (these 11 are the closed `auth.*` set) |
+
+Each `auth.*` channel declares only the codes it can return; ag-auth lists them with its core slice.
+Messages are core's constant per code. The renderer keeps its own user-facing text keyed on the code
+or on `details.kind` (an exhaustive switch with a typed default, so a new code is a compile error, not
+a blank toast), including "your OS keychain isn't available" versus "only plaintext storage is
+available, so install or enable libsecret or KWallet". Universal codes (`invalid_input`,
+`unauthorized_sender`, `unavailable`, `internal`) also apply.
 
 Renderer behavior and constraints:
 - **Secret-carrying channels are exactly `auth.addApiKey` and `auth.rotateApiKey`**, renderer →
-  main only. The `SecretInput` is cleared as soon as the call is dispatched, whether it later
+  main only (`auth.addKeyless` carries no secret). The `SecretInput` is cleared as soon as the call is dispatched, whether it later
   succeeds or fails; a failed add means the user retypes. Nothing is persisted in renderer state.
 - `auth.list` and every `CredentialRef` carry no key material, no prefix or suffix hint.
 - `auth.delete` with `revoked: false` for an OAuth credential is shown ("removed locally; the
@@ -553,8 +628,7 @@ record in main, and a stored key is bound to the host it was created with.
   "Waiting for confirmation in the system dialog" state and then the result (`user_declined` leaves
   the URL unchanged and is not an error).
 - Creating a **keyless connection** (`kind: 'none'`) to a non-loopback URL triggers the same native
-  confirm in main. The channel that creates a keyless connection is ag-auth's to name; the renderer
-  only needs it to return a `CredentialRef`.
+  confirm in main. That channel is `auth.addKeyless` (§6), which returns a `CredentialRef`.
 - `models.list` is unchanged (`{ credentialId }`). After a successful `setBaseUrl` the UI refreshes
   `auth.list` and re-requests the model list.
 
@@ -669,8 +743,7 @@ as such.
     `ARCHITECTURE.md` §6.
 13. **Terminal water marks and file size defaults** (ag-workspace): 256/64 KiB and 2 MiB default /
     16 MiB hard cap, to be tested and possibly revised there; the renderer takes them as given.
-14. **Base URL channels** (ag-providers and ag-auth, settled; their channel names win): `models.setBaseUrl`
-    as in §7.0.1, the catalog endpoint union, `CredentialRef.kind: 'none'` and `baseUrl`, and the
-    keyless-connection creation channel.
+14. **Base URL channels** (ag-providers and ag-auth, settled): `models.setBaseUrl` as in §7.0.1, the
+    catalog endpoint union, `CredentialRef.kind: 'none'` and `baseUrl`, and `auth.addKeyless` (§6).
 15. **D-010 isolation proposal** (joint with ag-foundation): starts with M2, decided before M3. §1.5 is
     my input.
