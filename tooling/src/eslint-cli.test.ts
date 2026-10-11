@@ -116,6 +116,40 @@ async function lintFile(source: string, suffix = '.ts'): Promise<CliOutcome> {
   return runEslint(['--config', 'eslint.config.js', relative, '--max-warnings', '0']);
 }
 
+describe('unsafe type assertions (real CLI)', () => {
+  it.each([
+    ['JSON.parse laundering', 'export const config = JSON.parse("{}") as { a: number };\n'],
+    [
+      'a generic cast helper',
+      'export function cast<T>(value: unknown): T {\n  return value as T;\n}\n',
+    ],
+    [
+      'narrowing a union',
+      'export function f(value: string | number): string {\n  return value as string;\n}\n',
+    ],
+    [
+      'narrowing to a subtype',
+      'interface Base { id: string }\ninterface Derived extends Base { extra: number }\nexport function f(base: Base): Derived {\n  return base as Derived;\n}\n',
+    ],
+  ])('rejects %s', async (_name, source) => {
+    const outcome = await lintFile(source);
+    expect(outcome.exitCode).not.toBe(0);
+    expect(outcome.output).toContain('@typescript-eslint/no-unsafe-type-assertion');
+  });
+
+  it.each([
+    ['as const', 'export const tuple = [1, 2] as const;\n'],
+    [
+      'widening to a supertype',
+      'interface Base { id: string }\ninterface Derived extends Base { extra: number }\nexport function f(d: Derived): Base {\n  return d as Base;\n}\n',
+    ],
+    ['widening to unknown', 'export const value = "x" as unknown;\n'],
+  ])('allows %s', async (_name, source) => {
+    const outcome = await lintFile(source);
+    expect(outcome.output).not.toContain('no-unsafe-type-assertion');
+  });
+});
+
 describe('skipped-test lint is scoped to test files (real CLI)', () => {
   const product =
     'declare const cursor: { skip: (n: number) => number };\ndeclare const filter: { only: boolean; todo: string[] };\n' +
