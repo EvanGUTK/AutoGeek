@@ -532,7 +532,7 @@ with the diff for the selected file.
   offered only for `deny` and `ask`. The form states what the contract guarantees: a broad allow
   never silently auto-allows a sensitive or otherwise elevated action; those still ask.
 - **Persistent exec rules keep applying.** Every `argv`, `argv_prefix` and `shell` **allow** rule shows
-  the note "This rule keeps applying even if scripts, Makefiles or package.json change", both in the
+  the persistent-rule note (for example: "This rule keeps applying even if the files this command runs change (scripts, Makefiles, package.json, lockfiles, hooks)"; the exact text is the core export's), both in the
   add form and on the rule's row in the list. Persistent exact rules are explicit user choices and are
   not cleared by the triggers that clear session grants, while an agent write to a file that can change
   what a command does is elevated so the user sees that diff (`docs/agent-contract.md`; the residual
