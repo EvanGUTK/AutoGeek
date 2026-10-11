@@ -519,7 +519,15 @@ async function checkSurface(
 export async function checkPackage(root: string, dir: string): Promise<PackageViolation[]> {
   const manifest = await readManifest(root, dir);
   if (manifest === undefined) {
-    return [{ dir, code: 'not-a-package', detail: `${dir} has no package.json` }];
+    return [
+      {
+        dir,
+        code: 'not-a-package',
+        detail:
+          `${dir} has no package.json. If this directory is a leftover from switching branches ` +
+          '(only untracked output such as node_modules or .turbo), remove it; otherwise add the manifest.',
+      },
+    ];
   }
   const environment = checkEnvironment(dir, manifest);
   const product = checkProductTsconfig(root, dir, environment.environment);

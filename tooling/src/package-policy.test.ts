@@ -123,6 +123,14 @@ describe('manifest', () => {
   it('fails closed on a directory without package.json', async () => {
     expect(codes(await check({ 'package.json': null }))).toContain('not-a-package');
   });
+
+  it('explains how to clean up a leftover directory from a branch switch', async () => {
+    const result = await check({ 'package.json': null });
+    const detail = result.find((v) => v.code === 'not-a-package')?.detail ?? '';
+    expect(detail).toMatch(/branch/i);
+    expect(detail).toMatch(/node_modules|\.turbo/);
+    expect(detail).toMatch(/remove|delete/i);
+  });
 });
 
 describe('scripts (a package without them is silently skipped by `turbo run`)', () => {
