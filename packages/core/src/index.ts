@@ -61,3 +61,5 @@ export { checkModelEventOrder } from './model/event-order.ts';
 export type { OrderRule, OrderViolation } from './model/event-order.ts';
 export { ModelRequestSchema, REASONING_EFFORTS, ToolSpecSchema } from './model/request.ts';
 export type { ModelRequest, ToolSpec } from './model/request.ts';
+export { ModelInfoSchema, SupportSchema } from './model/info.ts';
+export type { ModelInfo, ModelProvider, Support } from './model/info.ts';
