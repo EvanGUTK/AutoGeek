@@ -13,6 +13,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run"
   },
+  "dependencies": {
+    "zod": "catalog:"
+  },
   "devDependencies": {
     "@autogeek/tooling": "workspace:*",
     "@types/node": "catalog:",
