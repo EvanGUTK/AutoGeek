@@ -12,7 +12,7 @@
     "dev": "turbo run dev",
     "typecheck": "turbo run typecheck",
     "lint": "pnpm lint:eslint && pnpm lint:format && pnpm lint:deps",
-    "lint:eslint": "eslint . --max-warnings 0",
+    "lint:eslint": "eslint --config eslint.config.js . --max-warnings 0",
     "lint:format": "prettier --check .",
     "lint:deps": "depcruise --config .dependency-cruiser.mjs apps packages tooling",
     "format": "prettier --write .",
