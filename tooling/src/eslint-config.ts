@@ -60,10 +60,12 @@ export function createEslintConfig(options: EslintConfigOptions): Linter.Config[
         'no-restricted-syntax': [
           'error',
           {
+            // Any assertion whose operand is itself an assertion (`as unknown as T`,
+            // `as never as T`, `<T>(<unknown>x)`, ...) is a way around the type system.
             selector:
-              "TSAsExpression[expression.type='TSAsExpression'][expression.typeAnnotation.type='TSUnknownKeyword']",
+              ':matches(TSAsExpression, TSTypeAssertion) > :matches(TSAsExpression, TSTypeAssertion).expression',
             message:
-              'Double assertion through unknown defeats the type system. Validate with zod instead.',
+              'Chained type assertions defeat the type system. Validate with zod or narrow properly.',
           },
           {
             selector: `MemberExpression[object.name=${TEST_RUNNER_CALLEES}][property.name=${DISABLED_TEST_MODIFIERS}]`,
