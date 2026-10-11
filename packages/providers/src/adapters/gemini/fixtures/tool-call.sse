@@ -1,0 +1,2 @@
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_1","name":"read_file","args":{"path":"a.ts"}},"thoughtSignature":"c2lnLTE="}],"role":"model"},"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":263,"candidatesTokenCount":12,"totalTokenCount":312,"thoughtsTokenCount":37},"modelVersion":"gemini-3.8-flash","responseId":"resp_1"}
+

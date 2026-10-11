@@ -1,0 +1,2 @@
+data: {"candidates":[{"content":{"parts":[],"role":"model"},"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"Malformed function call: read_file(path=src/","index":0}],"usageMetadata":{"promptTokenCount":263,"candidatesTokenCount":12,"totalTokenCount":312,"thoughtsTokenCount":37},"modelVersion":"gemini-3.8-flash"}
+
