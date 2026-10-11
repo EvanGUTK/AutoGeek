@@ -409,7 +409,34 @@ Sent on every emitted transition; `workspace.getState` returns `{ root, watch: W
 | 12.10 | channel placement | declared in the workspace domain channel file in `core` alongside the other `workspace.*` channels, with its trust requirement declared like the rest |
 | 12.11 | atomic state and `seq` | the service updates `{ state, seq }` in one synchronous step before it emits, and `getState` reads both in one synchronous step, so no event can fall between them (a test interleaves emits and `getState` calls on the event loop). `seq` is per process, monotonic, and never reset when the root changes; a root change makes the renderer call `getState` again |
 | 12.12 | an event emitted between the renderer's subscribe and its `getState` call | neither lost nor applied twice: if its `seq` is at most the snapshot's it is dropped (already in `watch`), if greater it is applied once; explicit test with the event placed before, during and after the `getState` read |
-| 12.13 | exec-vector change tap (reviewer, for the gate): an INTERNAL main-side subscription, separate from the renderer's `fsChanged`, delivers a change on any path for which `isExecVector` is true, **regardless of ignore rules** (`node_modules/**`, `.venv/**` and `.git/hooks/**` are normally ignored or skipped by the renderer feed) and without the renderer's debounce cap. It carries only the root-relative path | the gate clears the root's exec/exec_shell session grants when it fires; the fast path stays `mutatesWorkTree` |
-| 12.14 | tap cost bound: the tap watches known exec-vector FILE names in each already-watched directory (non-recursive) plus the top-level dependency directories' own entries; it does not recursively watch `node_modules` | bounded by the watch cap; a test creates a large `node_modules` and asserts the handle count stays under the cap |
-| 12.15 | degraded watcher (`watch_limit`, `overflow`, `watch_error`, `ignore_rules_limit`) | the tap reports `degraded`; the gate clears all exec grants for the root and offers no exec "session" option while degraded; tested through the injected tap interface |
-| 12.16 | the tap and `isExecVector` agree: every positive example from X.1 produces a tap event when created, renamed over, or deleted in a real temp tree (create, modify, delete, rename in and out) | holds, per platform in CI |
+
+## 13. Exec-vector change source (main-side only; adopted by the chief as defense in depth, required before M3)
+
+A change to an exec-vector file from ANY cause (the user's editor, git operations, installers,
+scripts) can make an old exec session grant run new code. The tool-based triggers (approved writes
+to exec-vector files, tools that declare `mutatesWorkTree`) stay the race-free primary. This source
+is the second layer. Port consumed by ag-agent (defined in `core`):
+
+```ts
+interface ExecVectorChangeSource {
+  subscribe(rootKey: string, cb: (e: { type: 'changed' | 'unhealthy' | 'healthy' }) => void): () => void;
+}
+```
+
+| # | Scenario | Expected |
+|---|---|---|
+| 13.1 | visibility | main-side only: it is never an IPC channel and never reaches the renderer; a test enumerates the `core` channel declarations and asserts none carries it |
+| 13.2 | input | built on the RAW fs events, before debounce and before ignore filtering; the tree watcher's own ignore rules do not apply to it |
+| 13.3 | trigger | emits `changed` for create, modify, delete, and rename (in and out) of any path for which `isExecVector` is true, from any cause. Same positive examples as X.1 (a real temp tree, per platform) |
+| 13.4 | gitignore hides the file | still emitted (an ignored `.envrc`, an ignored `Makefile` in an ignored directory) |
+| 13.5 | dependency trees are EXCLUDED | `node_modules/**`, `.venv/**`, `venv/**`, `.tox/**`, `.nox/**`, `__pypackages__/**` emit nothing (installers touch them constantly, so including them would clear every grant after every run). Their writes stay a documented residual and are elevated only for agent writes. `node_modules/foo/package.json` emits nothing; root `package.json` does |
+| 13.6 | `.git` | explicitly covered despite the tree watcher's `.git` exclusion: `.git/config`, `.git/hooks/**`, `.git/info/{exclude,attributes}`, the module and worktree configs and hooks, and a `.git` gitlink file at any depth. Other `.git/` internals (`objects`, `refs`, `index`) emit nothing, so ordinary git activity does not clear grants |
+| 13.7 | fail closed | any watcher degradation (`watch_limit`, `overflow`, `watch_error`, `ignore_rules_limit`) emits `unhealthy`; the consumer clears all exec grants for the root and treats every grant as absent until `healthy`. `healthy` is emitted only after a full rescan of the exec-vector paths succeeded (a rescan compares file stat and a content hash of every known exec-vector file against the last snapshot and emits `changed` if any differs) |
+| 13.8 | cost bound | the source watches directories under a named handle cap shared with the tree watcher; hitting the cap means `unhealthy` (fail closed), never a silent gap. A test with a large tree asserts the handle count stays under the cap |
+| 13.9 | burst (a `git checkout` rewriting thousands of files) | many raw events collapse to at most one `changed` per tick; no unbounded queue; the consumer is idempotent |
+| 13.10 | race window | asynchronous by nature: a change immediately followed by an exec can slip through before the event arrives. Documented in `docs/SECURITY.md` and in the source's header; NOT asserted away. The tool-based triggers remain the primary |
+| 13.11 | nested repos and submodules | `.git` files and hooks of nested repos are covered |
+| 13.12 | root removed or trust revoked | the source emits `unhealthy` and then stops; subscribers are not leaked (handle counter) |
+| 13.13 | subscribe and unsubscribe | the returned function unsubscribes exactly once (idempotent); no event is delivered after it returns; a throwing callback does not stop the other subscribers or the watcher |
+| 13.14 | payload | carries only the `type` (no paths or strings from the repository); the path stays in main-side logs only |
+| 13.15 | untrusted root | no source is created (no agent mode there), and `subscribe` on an untrusted root returns an unsubscribe that does nothing and emits `unhealthy` once |
