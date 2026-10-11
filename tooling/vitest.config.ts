@@ -1,9 +1,6 @@
-import { defineConfig } from 'vitest/config';
+import { createVitestConfig } from './src/vitest/config.ts';
 
-export default defineConfig({
-  test: {
-    // Type-aware linting spins up a TypeScript project per test run; give it room.
-    testTimeout: 60_000,
-    allowOnly: false,
-  },
+export default createVitestConfig({
+  // Type-aware linting and CLI runs spin up TypeScript projects and child processes.
+  testTimeout: 60_000,
 });
