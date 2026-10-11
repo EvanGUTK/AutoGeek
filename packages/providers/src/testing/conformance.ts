@@ -28,8 +28,11 @@ export interface ConformanceFixtures {
   readonly malformedToolJson: string;
   /** Like `text`, with unknown events, fields and enum values sprinkled in. */
   readonly unknownFields: string;
-  /** A tool call cut off by the output limit. */
-  readonly truncatedToolCall: string;
+  /**
+   * A tool call cut off by the output limit, or why that cannot happen on this vendor (e.g. Gemini
+   * delivers each call whole, so a call is never cut mid-arguments).
+   */
+  readonly truncatedToolCall: string | { readonly notApplicable: string };
 }
 
 export interface ConformanceSpec {
@@ -130,13 +133,20 @@ export function defineConformanceSuite(spec: ConformanceSpec): void {
       ]);
     });
 
-    it('marks a call cut off by the output limit as truncated', async () => {
-      const events = await streamBody(spec.fixtures.truncatedToolCall);
-      expect(events.filter((event) => event.type === 'tool_call_invalid')).toEqual([
-        expect.objectContaining({ reason: 'truncated' }),
-      ]);
-      expect(events.at(-1)).toEqual({ type: 'done', stopReason: 'max_tokens' });
-    });
+    const truncated = spec.fixtures.truncatedToolCall;
+    if (typeof truncated === 'string') {
+      it('marks a call cut off by the output limit as truncated', async () => {
+        const events = await streamBody(truncated);
+        expect(events.filter((event) => event.type === 'tool_call_invalid')).toEqual([
+          expect.objectContaining({ reason: 'truncated' }),
+        ]);
+        expect(events.at(-1)).toEqual({ type: 'done', stopReason: 'max_tokens' });
+      });
+    } else {
+      it('documents why a call cannot be cut off by the output limit', () => {
+        expect(truncated.notApplicable.length).toBeGreaterThan(20);
+      });
+    }
 
     it('does not crash on unknown vendor fields and events', async () => {
       const events = await streamBody(spec.fixtures.unknownFields);
