@@ -301,6 +301,18 @@ describe('circumventions of the dependency rules', () => {
     expect(violations.map((v) => v.split(':')[0])).toContain('layer-violation-agent');
   });
 
+  it.each([
+    'tooling/coverage/lcov-report/block.js',
+    'tooling/dist/index.js',
+    'apps/desktop/out/main/index.js',
+  ])('build output at %s is not crawled as source either', async (output) => {
+    const violations = await violationsFor({
+      [output]: "import { x } from '../../../packages/core/src/index.ts';\nexport const y = x;\n",
+      'packages/core/src/index.ts': exported,
+    });
+    expect(violations).toEqual([]);
+  });
+
   it('build output inside a package is not crawled as source', async () => {
     const violations = await violationsFor({
       'packages/core/src/index.ts': exported,
