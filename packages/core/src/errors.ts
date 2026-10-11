@@ -13,6 +13,14 @@ import type { JsonValue } from './json.ts';
  * - Auth/vault failures -> `secure_storage_unavailable` or `internal` as appropriate.
  * Vendor text, file contents, key material and `ProviderError.detail` never cross.
  *
+ * `details: { domain, kind }` may accompany any code where the UI needs the owner's specific
+ * reason (for example `secure_storage_unavailable` with `{ domain: 'auth', kind:
+ * 'insecure_backend' }`, or `domain_error` for failures that have no better general code). The
+ * `kind` is a closed enum from the owner's error type, validated by that channel's `errorDetails`.
+ *
+ * The set is closed on purpose and snapshot-tested: adding or removing a code is a contract change
+ * (every channel owner and the UI switch over it), reconciled against docs/ipc-channels.md §1.3.
+ *
  * Invariant: `message` is a constant per code (`ERROR_MESSAGES`) and is safe to display and log.
  * It is never interpolated with user content, paths, file contents, vendor text or secrets. All
  * variable information goes in `details`, which must be JSON-serializable and safe to show.
@@ -27,17 +35,24 @@ export const ERROR_CODES = [
   'conflict',
   'too_large',
   'unsupported',
+  'too_long',
+  'too_many',
+  'invalid_base_url',
+  'base_url_not_editable',
   // Workspace and permission boundaries
   'outside_workspace',
   'sensitive_path',
   'untrusted_workspace',
+  'protected_path',
   'permission_denied',
+  'user_declined',
   'secure_storage_unavailable',
   // Operation lifecycle
   'cancelled',
   'timeout',
   'unavailable',
   'io',
+  'domain_error',
   'internal',
 ] as const;
 
@@ -53,15 +68,22 @@ export const ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   conflict: 'The item changed since it was last read.',
   too_large: 'The item exceeds the allowed size.',
   unsupported: 'The operation is not supported.',
+  too_long: 'The text is too long to show for confirmation.',
+  too_many: 'Too many items were requested.',
+  invalid_base_url: 'The base URL cannot be used.',
+  base_url_not_editable: "This provider's endpoint cannot be changed.",
   outside_workspace: 'The path is outside the trusted workspace.',
   sensitive_path: 'The path is sensitive and was not approved.',
   untrusted_workspace: 'The workspace is not trusted.',
+  protected_path: 'The path is protected and cannot be modified.',
   permission_denied: 'Permission was denied.',
+  user_declined: 'The user declined the request.',
   secure_storage_unavailable: 'Secure credential storage is unavailable.',
   cancelled: 'The operation was cancelled.',
   timeout: 'The operation timed out.',
   unavailable: 'The service is unavailable.',
   io: 'An input/output error occurred.',
+  domain_error: 'The operation failed with a domain-specific error.',
   internal: 'An internal error occurred.',
 };
 

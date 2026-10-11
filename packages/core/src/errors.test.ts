@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -241,5 +243,83 @@ describe('createCoreErrorSchema', () => {
     expect(
       CoreErrorSchema.safeParse({ code: 'io', message: ERROR_MESSAGES.io, details: [1] }).success,
     ).toBe(true);
+  });
+});
+
+describe('the closed ErrorCode set', () => {
+  // A snapshot on purpose: adding or removing a code is a contract change that must be reviewed
+  // (every channel owner and the UI switch over this set). Reconciled against
+  // docs/ipc-channels.md §1.3, docs/agent-contract.md and docs/ui-spec.md.
+  it('is exactly the reconciled list', () => {
+    expect([...ERROR_CODES].sort()).toEqual(
+      [
+        'base_url_not_editable',
+        'cancelled',
+        'conflict',
+        'domain_error',
+        'internal',
+        'invalid_base_url',
+        'invalid_input',
+        'io',
+        'no_longer_pending',
+        'not_found',
+        'outside_workspace',
+        'permission_denied',
+        'protected_path',
+        'secure_storage_unavailable',
+        'sensitive_path',
+        'timeout',
+        'too_large',
+        'too_long',
+        'too_many',
+        'unauthorized_sender',
+        'unavailable',
+        'unknown_key',
+        'unsupported',
+        'untrusted_workspace',
+        'user_declined',
+      ].sort(),
+    );
+  });
+
+  it('has no duplicate codes', () => {
+    expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
+  });
+
+  it('covers every code in the common-error table of docs/ipc-channels.md §1.3', async () => {
+    const doc = await readFile(
+      join(import.meta.dirname, '..', '..', '..', 'docs', 'ipc-channels.md'),
+      'utf8',
+    );
+    const section = doc.slice(doc.indexOf('### 1.3'), doc.indexOf('### 1.4'));
+    const documented = [...section.matchAll(/^\| `([a-z_]+)` \|/gm)].map((match) => match[1] ?? '');
+    expect(documented.length).toBeGreaterThan(10);
+    expect(documented.filter((code) => !(ERROR_CODES as readonly string[]).includes(code))).toEqual(
+      [],
+    );
+  });
+
+  it.each([
+    'domain_error',
+    'user_declined',
+    'too_long',
+    'invalid_base_url',
+    'base_url_not_editable',
+    'protected_path',
+    'too_many',
+  ] as const)('gives %s a constant message that names no variable content', (code) => {
+    const message = ERROR_MESSAGES[code];
+    expect(message.length).toBeGreaterThan(0);
+    expect(message).not.toMatch(/[{}$%<>]/);
+    expect(CoreErrorSchema.safeParse({ code, message }).success).toBe(true);
+  });
+
+  it('accepts domain details {domain, kind} next to any code, with the constant message', () => {
+    const error = coreError('secure_storage_unavailable', {
+      domain: 'auth',
+      kind: 'insecure_backend',
+    });
+    expect(CoreErrorSchema.safeParse(error).success).toBe(true);
+    expect(error.message).toBe(ERROR_MESSAGES.secure_storage_unavailable);
   });
 });
