@@ -95,3 +95,18 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
   user explicitly accepts the residual risk.**
 - **Consequences:** a small cost now (two native dialogs, one IPC-format field); a real architecture
   task before M3, tracked here.
+
+## D-011 Exec-grant soundness: grants do not pin what a command runs
+- **Status:** accepted (chief, 2026-10-11; raised by ag-workspace and ag-reviewer, designed with ag-agent)
+- **Decision:** exec/exec_shell session grants are cleared on writes to exec-vector files, on mutating
+  execs, on work-tree-mutating tools, and on tap change/degradation, with a bounded flush before use;
+  persistent exact rules are not suspended (documented residual). Full text: agent-contract §12.1–12.2.
+- **Consequences:** a few extra prompts after installs and branch switches; one residual class in SECURITY.md.
+
+## D-012 Trust and root-scoped rules bind to folder identity
+- **Status:** accepted (chief, 2026-10-11; raised by ag-reviewer)
+- **Decision:** rootKey = realpath + opaque identity token; a mismatch opens untrusted and quarantines the
+  root's rules until natively reconfirmed; restore at launch never auto-opens a changed root. See
+  agent-contract §12.3.
+- **Consequences:** re-trust after a re-clone or remount (fail closed); identity probing is per-filesystem
+  and documented by ag-workspace.

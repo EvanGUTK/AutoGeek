@@ -34,3 +34,26 @@ a decision's effects as true before the code does ("all versions are exact" whil
 When package A needs a capability implemented by package B and §4 has no A→B edge, do NOT add the
 edge: define a port (interface) in `@autogeek/core`, implement it in B, and wire it in
 `apps/desktop`. Example: `mcp` gets OAuth through a core `OAuthPort` implemented by `auth`.
+
+## L-006 Never run machine-wide process killers (2026-10-11)
+`pkill -f 'pnpm verify'` matches every agent's process on the shared machine and killed in-flight runs.
+Kill only your own processes by PID. *Why:* eight agents share one machine.
+
+## L-007 Tests that execute generated input need a sandbox, not just a vocabulary (2026-10-11)
+A "closed grammar" shell fuzz still allowed a recursive function named after the harness (fork bomb) and
+`PATH=''` still ran cwd files in macOS sh. Execute only strings that BOTH the parser accepts AND an
+independent guard confirms are harmless; never execute rejected strings; add resource limits, timeouts,
+process-group kill, and a canary proving the test can fail. *Why:* the strings a parser-hunting fuzz
+looks for are exactly the ones that smuggle commands.
+
+## L-008 READY TO MERGE must be mergeable by evidence (2026-10-11)
+State the approved SHA, the ref to merge (containing only approved commits), that it is based on current
+main (re-check main before sending), and `git range-diff` against each approved SHA after any rebase. The
+chief verifies ancestry and equivalence itself; a claim without evidence is not accepted. *Why:* several
+messages quoted stale SHAs or bases after main moved.
+
+## L-009 Fail-closed means every error path denies (2026-10-11)
+Missing classifier, unreadable rule store, failed flush, degraded watcher, stat error, unknown subcommand,
+unparseable shell string, unreadable trust history: all treat the situation as the dangerous case. Any
+"allow" must come from a positive, successful, current check. *Why:* most major findings so far were
+fail-open edges (quarantine write failures, A→B→A identity, cache replays, `|| true`).

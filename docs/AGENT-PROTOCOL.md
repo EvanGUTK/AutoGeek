@@ -27,7 +27,13 @@ that is where the chief records corrections so you do not repeat them.
 - Your worktree: `/Users/alpha1/Coding Projects/bridgemind/AutoGeek-worktrees/<agent>` (created by
   the chief). Never edit files in the primary checkout or another agent's worktree.
 - Branches are `agent/<agent>/<topic>`. One topic per branch; keep branches short-lived.
-- Never commit to `main`. Never force-push. Never rewrite commits that were already reviewed.
+- Never commit to `main` (only the chief does, by fast-forward). Never force-push, with ONE narrow
+  exception: `git push --force-with-lease` on your OWN `agent/<you>/*` branch after rebasing it onto
+  `main`, never on `main`, never on another agent's branch, always stated in your READY TO MERGE message
+  (with a `git range-diff` against each approved SHA). Never rewrite commits that were already reviewed
+  other than by such a rebase. Keep unreviewed work on a separate ref from the approved commits.
+- Never run machine-wide process killers (`pkill -f`, `killall`); kill only your own processes by PID.
+- A `main` commit by the chief forces every in-flight branch to rebase, so the chief batches them.
 - Stay inside your scope (ARCHITECTURE.md §10). Need a change in another package? Ask the owner
   or the chief; do not edit it yourself unless the chief says so.
 

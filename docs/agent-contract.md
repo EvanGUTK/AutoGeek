@@ -417,7 +417,8 @@ Paths in outputs (`restores`, `restored`, `conflicts`, `getRunDiff`) are root-re
 | `permissions.listPending` | `{}` | `{ items: ApprovalRequestedPayload[] }` (this window's) | none |
 | `permissions.listSessionApprovals` | `{}` | `{ items: Array<{ ruleId; toolName; action: WireAction; createdAt }> }` | none |
 | `permissions.revokeSessionApproval` | `{ ruleId }` | `{}` | `not_found` |
-| `permissions.listRules` | `{}` | `{ rules: PolicyRule[] }` (global + current root) | none |
+| `permissions.listRules` | `{}` | `{ rules: PolicyRule[]; inactive: Array<{ rule: PolicyRule; reason: 'identity_changed' }> }` (global + current root; quarantined root rules are listed as inactive) | none |
+| `permissions.reactivateRules` | `{ ruleIds: string[] (1..50) }` | `{ count: number; dropped: Array<{ ruleId; reason }> }` | `not_found`, `too_many`, `user_declined`; main builds a native confirm listing each valid rule literally (display-safe); all-or-nothing for the valid set, atomic write |
 | `permissions.addRule` | `{ rule: PolicyRuleInput }` | `{ ruleId }` | `invalid_input`, `too_long` [chief] (the rule's native-confirm text would exceed its bound; rejected, never truncated), `user_declined` (native confirm refused) |
 | `permissions.removeRule` | `{ ruleId }` | `{}` | `not_found` |
 
@@ -516,3 +517,28 @@ cached tokens inside the input count), so each adapter normalizes and a conforma
 - **Budgets** come from the `agent.budgets` setting (owner ag-ui, schema bounds required, e.g. maxSteps ≤
   1000), read by main at run start; the loop takes an injected `budgetsFor(): RunBudgets`. Lifting a cap
   to `null` requires a native confirm in the `settings.set` handler.
+
+## 12. Exec-grant soundness and root identity (consolidated chief rulings, 2026-10-11)
+
+These rulings were made in conversation with ag-agent, ag-workspace and ag-reviewer; this section is the
+authoritative statement.
+
+### 12.1 Core ports (each defined in core by its consumer under the chief's grant; implemented elsewhere)
+- `EnvKeyClassifier { isBenign(key) }` (+ `createAllowlistEnvKeyClassifier`): allowlist-only, case-sensitive, fail closed; the gate refuses to construct without it.
+- `ExecVectorClassifier`: `isExecVector(canonicalRelativePath)` (malformed ⇒ true, valid unmatched ⇒ false), `execMayRewriteVectors(argv)` (git: READ-ONLY allowlist, anything else mutating; package managers: MUTATING denylist; unknown executables non-mutating), and `simpleArgvOf(command): string[] | null` (conservative single-simple-command parse; null ⇒ the exec_shell counts as mutating). Implemented by ag-workspace from its reviewed tables.
+- `ExecVectorChangeTap { subscribe(listener), flush(rootKey, signal), isHealthy(rootKey) }`, events `{rootKey, kind: changed|degraded|recovered}` with no path. Implemented by ag-workspace on raw fs events (any cause), excluding dependency trees, covering `.git/hooks` and `.git/config`.
+- `Tool.mutatesWorkTree: boolean` is REQUIRED (no default). Bridged MCP tools declare `true` by default; relaxing it per tool is a user-confirmed setting designed by ag-mcp.
+
+### 12.2 When exec/exec_shell session grants for a root are cleared (all per root, all audited)
+1. `exec_vector_write`: an allowed `fs_write` touching an exec vector (rename checked on both sides).
+2. `exec_vector_exec`: an allowed exec/exec_shell that `execMayRewriteVectors` marks mutating, or an exec_shell whose `simpleArgvOf` is null.
+3. `work_tree_mutated`: a STARTED call of a `mutatesWorkTree` tool settles in any way (rejected or skipped calls do not trigger it).
+4. `exec_vector_changed`: the tap reports a change; `watcher_unhealthy` / `watcher_degraded`: the tap is degraded, throws, times out, is missing, or `flush` fails.
+Before allowing any exec via a session grant the gate awaits `tap.flush(rootKey)` (bounded, default 1500 ms, plus the request signal); a failed flush clears, audits and asks. While the tap is unhealthy, exec actions get no `session` option. NOT cleared after arbitrary exec (it would nullify grants).
+Documented residuals (docs/SECURITY.md): one command that edits a vector and then runs it, command side effects, edits the tool/tap never sees, **persistent exact allow rules are not suspended** (explicit user choices; the agent's own writes to exec vectors are elevated so the user sees the diff). The native confirm and the rule editor carry `PERSISTENT_EXEC_RULE_NOTICE`, a core constant: "This rule keeps applying even if the files this command runs change (scripts, Makefiles, package.json, lockfiles, hooks)".
+
+### 12.3 Root identity binds trust and root-scoped rules
+- `rootKey` is an opaque token = realpath + identity, produced by ag-workspace's trust store (identity = `b:<ino>:<birthtimeNs>` when birthtime > 0, else `d:<dev>:<ino>`); the rule store never parses it.
+- On open the trust store reports `{ rootKey, identityChanged, previousRootKeys }` (previous keys capped at 16). When `identityChanged`, desktop calls `rules.quarantine(previousRootKeys + currentRootKey)`: keys are marked in memory FIRST, then persisted; a failed persist means "rules unavailable" (no rules, no baseline, everything asks), never resurrection. Quarantine is a persisted flag in the rule store.
+- The root opens UNTRUSTED with no session grants; quarantined rules are kept but inactive until `permissions.reactivateRules`; global rules are unaffected. Audit: `rules_quarantined`, `rules_reactivated`. Reactivation re-validates every rule; invalid ones stay quarantined and are reported in `dropped`.
+- Restore at launch: the last folder reopens only if it exists AND its identity matches; a changed or unavailable root is never auto-opened (`root: null` plus an `identity_changed` notice held in store state and cleared by seq-bumping transitions). Restore never upgrades trust, never starts an agent run, never reapplies session grants.
