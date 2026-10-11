@@ -55,8 +55,11 @@ export interface ConformanceSpec {
 
 /** How the adapter replays reasoning from history (its documented origin-matching rule). */
 export interface ReplaySpec {
-  /** 'provider': every same-provider part is replayed; 'provider+model': only the request model's. */
-  readonly matchesOn: 'provider' | 'provider+model';
+  /**
+   * 'provider': every same-provider part is replayed; 'provider+model': only the request model's;
+   * 'none': the vendor has no field to replay reasoning in, so nothing ever is.
+   */
+  readonly matchesOn: 'provider' | 'provider+model' | 'none';
   /** The adapter's request body for `request`. */
   readonly build: (request: ModelRequest) => unknown;
   /** A replayable reasoning part from `providerId`/`modelId` whose wire form contains `token`. */
@@ -274,7 +277,9 @@ export function defineConformanceSuite(spec: ConformanceSpec): void {
         const expected =
           replay.matchesOn === 'provider'
             ? [OTHER_MODEL, SAME_MODEL, IN_PROGRESS]
-            : [SAME_MODEL, IN_PROGRESS];
+            : replay.matchesOn === 'provider+model'
+              ? [SAME_MODEL, IN_PROGRESS]
+              : [];
         expect(replayed({ ...spec.request, messages: history })).toEqual(expected);
       });
 
@@ -283,9 +288,9 @@ export function defineConformanceSuite(spec: ConformanceSpec): void {
       });
 
       it("keeps only the in-progress tool-use turn's reasoning with reasoningReplay 'drop'", () => {
-        expect(replayed({ ...spec.request, messages: history, reasoningReplay: 'drop' })).toEqual([
-          IN_PROGRESS,
-        ]);
+        expect(replayed({ ...spec.request, messages: history, reasoningReplay: 'drop' })).toEqual(
+          replay.matchesOn === 'none' ? [] : [IN_PROGRESS],
+        );
       });
 
       if (replay.matchesOn === 'provider') {
