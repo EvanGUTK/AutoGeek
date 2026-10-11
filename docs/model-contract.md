@@ -145,7 +145,7 @@ boundaries explicit, which the loop needs to rebuild the assistant message in ve
    and that order is the replay order.
 2. Parallel tool calls are separate consecutive `tool_call` events. Their ids are unique within a
    response.
-3a. **Usage normalization.** `inputTokens` is UNCACHED input only: it excludes `cacheReadTokens` and
+2a. **Usage normalization.** `inputTokens` is UNCACHED input only: it excludes `cacheReadTokens` and
    `cacheWriteTokens`, so the three plus `outputTokens` sum without double counting. Vendors differ
    (some report cached tokens as a subset of their input count), so each adapter normalizes by
    subtracting and the conformance suite asserts it with a fixture per vendor. `reasoningTokens` is
