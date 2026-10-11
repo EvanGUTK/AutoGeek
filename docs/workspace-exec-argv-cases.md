@@ -180,21 +180,80 @@ form. Heredocs (`<<`) and line continuations fall under the characters above.
 | S.24 | `cmd "a\tb"` with a literal tab inside quotes | accepted (tab is allowed in quotes) |
 | S.25 | alias or function names are not special: `ll`, `cd x` | `['ll']`, `['cd','x']` (builtins are plain argv; `cd x && y` is `null`) |
 
-### 2.2 The invariant, fuzzed against a real shell
+### 2.2 The invariant, fuzzed against a real shell (safety design first)
 
-**Invariant:** if `simpleArgvOf(c)` returns `argv`, then a real POSIX shell running `c` executes
-exactly one command, with exactly that `argv`. The test runs inside `pnpm verify` and fails loudly
-(no skip) if `/bin/sh` or `bash` is missing.
+**Invariant:** if `simpleArgvOf(c)` returns `argv`, then a real POSIX shell running `c` runs the
+harness exactly once with exactly that `argv`.
 
-| # | Check |
-|---|---|
-| F.1 | A temp `bin/` holds a stub executable `probe` that appends its `argv` (NUL separated, with a record separator) to a log and exits 0. Commands are generated from a fast-check grammar of words, quotes, operators, expansions, comments, control characters and Unicode, with the first word forced to `probe` (and a variant with `PATH` unset to check no other command ran). For every generated command where `simpleArgvOf` returns non-null, run it under `sh` (dash on Linux, bash-in-posix-mode on macOS) and `bash` and assert: exit status 0, exactly one `probe` record, and `argv` equals the recorded argv. |
-| F.2 | `sh -n` (syntax check only) is also run: a non-null result must parse. |
-| F.3 | A second property: for every command where the real shell runs more than one command or any other process, `simpleArgvOf` returned `null` (one-directional; `null` for a harmless command is allowed). Detected with the stub log and a second stub `other` placed on `PATH`. |
-| F.4 | Shrinking is on, and the failing command is printed in the test output. The seed is fixed per CI run and printed, with at least 5,000 runs. |
-| F.5 | Adversarial seeds are always in the corpus: the S.* rows, the A.29 forms, `\r`, `\u0085`, bidi controls, NUL, `$'...'` ANSI-C quoting (`$` is `null`), `\!`, here-strings, `{a,b}` brace expansion, `~` forms, process substitution `<(x)`, arithmetic `$((1))`, `&>`, `|&`, and a trailing backslash. |
-| F.6 | Runtime bound: a fast-check test with pathological inputs (100k quotes, deep nesting characters) completes under a time bound; the parser is a single linear pass. |
-| F.7 | The fuzz test needs `fast-check` as a devDependency (pinned exact version, justified in the commit body), the same one used by the ignore matcher tests. |
+**This test runs generated strings in real `sh` and `bash`, and the strings it hunts for are the
+ones that smuggle commands.** A parser bug must not run a payload on a developer's machine. The
+design below is mandatory and is written at the top of the test file as well (chief conditions).
+
+1. **(a) Closed vocabulary, not free-form strings.** The generator emits a token sequence from a
+   fixed grammar, never a free string.
+   - A *command word* is always the **absolute path of the harness binary**, a literal token placed
+     by the generator, never an expansion. It is emitted at every command-start context: the start
+     of the string, after `;`, `&&`, `||`, `|`, `|&`, `&`, `(`, `{`, a newline, `then`, `else`, `do`,
+     `$(`, `` ` ``, `<(` and `>(`, after `!` and `time`, and after assignment prefixes.
+   - *Argument words* (and redirect targets, with a narrower set) come from a closed word list of
+     plain letters and digits: `a b c x y z 0 1 foo`. No slash, dot, tilde, `$`, `=`, quote or
+     backslash is part of a *word*; those characters appear only as separate, generator-placed
+     syntax tokens (quote marks, `$`, `$(`, backtick, `\`, `*`, `?`, `~`, `{`, `}`, `#`, `!`, `;`,
+     `|`, `&`, `<`, `>`, `(`, `)`, newline, tab, CR, NUL, U+0085, bidi and zero-width characters,
+     `$'`, here-doc markers).
+   - **Redirect targets** are drawn only from `a b c` (no expansion syntax in the target slot), so
+     no file outside the per-run temp directory can be named. The harness path never appears in a
+     redirect-target or argument slot.
+   - **No builtin or exec-capable word is in the vocabulary.** A unit test builds the forbidden set
+     from the shells themselves (`compgen -b` and `compgen -k` in `bash`, a fixed list for `sh`: `.`,
+     `:`, `eval`, `exec`, `exit`, `kill`, `cd`, `trap`, `source`, `read`, `set`, `type`, `command`,
+     `alias`, `wait`, `ulimit`, `umask`, `unset`, `export`, `readonly`, `shift`, `return`, `break`,
+     `continue`, `times`, `getopts`, `hash`, `jobs`, `fg`, `bg`, `disown`, `enable`, `builtin`,
+     `declare`, `local`, `let`, `mapfile`, `printf`, `echo`, `test`, `[`, `pushd`, `popd`, `dirs`)
+     and asserts that no vocabulary word is in it. The structural keywords `if then else elif fi for
+     in do while until done case esac select function time ! { }` are emitted only as generator
+     syntax tokens in their legal positions; they cannot execute anything.
+   - Any word that an expansion produces is also from the vocabulary (the harness prints only its
+     arguments, which are vocabulary words), so even `$(harness a)` in an odd position can only
+     yield `a`, which is "command not found" under an empty `PATH`.
+   - A **grammar self-check** unit test asserts, over many generated strings, that the harness path
+     token appears only in command-start positions and never inside the vocabulary, and that the
+     vocabulary excludes `/`, `.`, `~` and the forbidden set.
+2. **(b) The harness** is a tiny executable copied into a per-run temp directory with mode `0555`.
+   It prints its `argv[1..]` NUL-delimited to a fixed record file in that directory and touches a
+   sentinel file there, nothing else.
+3. **(c) Isolation per case:** environment fully scrubbed (`env -i` equivalent: an empty env object
+   passed to `spawn`), `PATH` empty, cwd = the per-run temp directory, `HOME` unset, no network by
+   construction (the harness opens none, the vocabulary names no `/dev/tcp`), a hard wall-clock
+   timeout and an output cap per case, spawned in its own process group and killed as a group on
+   exit, timeout, or test abort. The temp directory is removed afterwards. The shells are run with
+   `--noprofile --norc`, non-interactive, never with `-i`.
+4. **(d) Property:** for every generated string where `simpleArgvOf` returns non-null `argv`, in
+   `sh` AND `bash` the sentinel and record files show exactly one harness invocation with exactly
+   that argv, exit status 0. Any second invocation (or the shell running anything else) fails the
+   test; because the only runnable command word is the harness, a smuggled command can only show
+   up as an extra harness record. A one-directional second property: where the shell recorded more
+   than one harness call, or exited with a syntax error, `simpleArgvOf` returned `null`.
+5. **(e) Canary:** a deliberately broken parser (it wrongly accepts `a; b`, and a second variant that
+   accepts `$(...)`) is run through the same harness and the property MUST FAIL for it. A passing
+   canary run fails the suite. This proves the test can catch the bug.
+6. `sh -n` (syntax check only, nothing runs) is also run on every accepted string as an extra
+   cross-check.
+7. The shells are `/bin/sh` and `bash`. If either is missing the test FAILS LOUDLY with a typed
+   error (no skip). On macOS `/bin/sh` is bash in POSIX mode; the test records which implementation
+   ran.
+8. **Fallback if (a) cannot be made airtight in review:** do not execute shells. Replace the
+   property test with a differential test against a reference tokenizer plus `sh -n` for syntax
+   only. ag-reviewer decides; the executing form is kept only if they accept the design above.
+9. Runtime bound: pathological inputs (100k quotes, deep nesting characters) complete under a time
+   bound; the parser is one linear pass. At least 5,000 generated cases per run, a printed seed,
+   shrinking on, and adversarial seeds always in the corpus: the S.* rows, the A.29 forms, `\r`,
+   `\u0085`, bidi controls, NUL, `$'...'`, `\!`, here-strings, `{a,b}`, `~`, `<(x)`, `$((1))`,
+   `&>`, `|&`, and a trailing backslash, all written with the harness token in command positions.
+10. Dependency: `fast-check`, one exact version in the pnpm `catalog:` (whoever needs it first adds
+    the entry and the other package reuses it), within the release cooldown, no
+    `minimumReleaseAgeExclude`, justification in the commit body, and any pnpm config change
+    disclosed (LEARNINGS L-002).
 
 ## 3. Wiring (for the gate)
 
