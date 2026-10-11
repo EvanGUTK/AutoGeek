@@ -47,8 +47,15 @@ this plan uses the `CheckpointPort` and `Compactor` ports defined in Task 6.
   - max parallel read calls 8;
   - per-result tool output cap 32_000 chars.
 - Token budget = Σ(`inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens`)
-  (model-contract rule 2a). Spend = Σ round(tokens × price-per-1M-USD) for each component, in
-  integer micros, `null` when the model is unpriced.
+  (model-contract rule 2a).
+- **Spend (chief):** `ModelInfo.pricing` is INTEGER USD MICROS PER 1M TOKENS.
+  - Per usage event and per component (input, output, cacheRead, cacheWrite):
+    `ceil(tokens × priceMicrosPer1M / 1_000_000)`, computed in `BigInt`.
+  - The result is summed and **rounded up**, so caps over-count rather than under-count.
+  - Totals are converted to `number` only at the boundary, with a `Number.isSafeInteger`
+    assertion. An unsafe total fails the run with `internal_error`.
+  - Unpriced models: `costUsdMicros: null`, the `spend_cap_unpriced` warning, and the token cap
+    still applies.
 - Recoveries, each at most once per step and only before the step streamed any content:
   - `context_length` → compact, then retry;
   - `invalid_request` while replayed reasoning carries `providerMetadata` → retry with
@@ -193,7 +200,9 @@ Rules:
 **Interfaces:**
 - Produces:
   - `addUsage(t: UsageTotals, u: ModelUsage, pricing: Pricing | null): UsageTotals`
-    (`Pricing` = `ModelInfo['pricing']` non-null)
+    (`Pricing` = `ModelInfo['pricing']` non-null: integer micros per 1M tokens)
+  - `componentCostMicros(tokens: number, priceMicrosPer1M: number): bigint` =
+    `ceilDiv(BigInt(tokens) * BigInt(priceMicrosPer1M), 1_000_000n)`
   - `tokensUsed(t: UsageTotals): number`
   - `budgetHit(args: { totals: UsageTotals; steps: number; budgets: RunBudgets; nextInputEstimate: number }): 'steps' | 'tokens' | 'spend' | null`.
     Time is the driver's timer.
@@ -204,7 +213,11 @@ Rules:
     across parts.
 
 - [ ] **Step 1: Write the failing tests:**
-  - micros rounding is per component and deterministic;
+  - micros rounding is per component, rounds up and is deterministic: 1 token at 1 micro/1M → 1;
+    0 tokens → 0; 1_000_000 tokens at 3_000_000 → 3_000_000;
+  - property (chief): cost is **monotonic** in each token count and price, and **never below the
+    exact rational value** (`cost × 1_000_000 ≥ tokens × price` for every component and for the
+    total);
   - unpriced → `costUsdMicros: null`, and the spend budget never triggers;
   - the token budget counts cache reads/writes;
   - steps hit at exactly `maxSteps`;
