@@ -64,7 +64,8 @@ function tempNameFor(target: string): string {
   return `.${basename(target)}.${randomBytes(TEMP_SUFFIX_BYTES).toString('hex')}.tmp`;
 }
 
-function errnoOf(thrown: unknown): string | null {
+/** The errno code of a thrown fs error, or null. Rethrows non-Error values (programmer errors). */
+export function errnoOf(thrown: unknown): string | null {
   if (!(thrown instanceof Error)) throw thrown;
   return 'code' in thrown && typeof thrown.code === 'string' ? thrown.code : null;
 }
