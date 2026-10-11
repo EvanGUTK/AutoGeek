@@ -8,10 +8,34 @@ export interface EslintConfigOptions {
   readonly tsconfigRootDir: string;
 }
 
+// Any assertion whose operand is itself an assertion (`as unknown as T`, `as never as T`,
+// `<T>(<unknown>x)`, ...) is a way around the type system.
+const CHAINED_ASSERTION = {
+  selector:
+    ':matches(TSAsExpression, TSTypeAssertion) > :matches(TSAsExpression, TSTypeAssertion).expression',
+  message: 'Chained type assertions defeat the type system. Validate with zod or narrow properly.',
+};
+
 // Matched on the rightmost property of ANY member chain, not on the callee name, so aliased
-// imports, extended tests and chained modifiers (`it.concurrent.skip`) cannot dodge it. Runtime
-// skips are also caught after the fact by the FailOnSkippedReporter in the shared Vitest config.
+// imports, extended tests and chained modifiers (`it.concurrent.skip`) cannot dodge it. Only
+// applied to test files: product code legitimately has `cursor.skip(2)` or a `filter.only`.
+// Runtime skips are also caught after the fact by the FailOnSkippedReporter in the shared
+// Vitest config, which is the authoritative gate; this rule is the early signal.
 const DISABLED_TEST_MODIFIERS = '/^(skip|only|todo|skipIf|runIf|fails)$/';
+const SKIPPED_TEST_MESSAGE =
+  'Skipped, focused, or todo tests are not allowed. Write the test or delete it.';
+const SKIPPED_TEST_SELECTORS = [
+  {
+    selector: `MemberExpression[computed=false][property.name=${DISABLED_TEST_MODIFIERS}]`,
+    message: SKIPPED_TEST_MESSAGE,
+  },
+  {
+    selector: `MemberExpression[computed=true][property.value=${DISABLED_TEST_MODIFIERS}]`,
+    message: SKIPPED_TEST_MESSAGE,
+  },
+];
+
+const TEST_FILES = ['**/*.{test,spec}.{ts,tsx,mts,cts}', '**/vitest.setup.{ts,mts}'];
 
 /**
  * The repo-wide lint policy. Everything here is an error: `pnpm lint` runs with
@@ -59,27 +83,14 @@ export function createEslintConfig(options: EslintConfigOptions): Linter.Config[
           'error',
           { considerDefaultExhaustiveForUnions: false },
         ],
-        'no-restricted-syntax': [
-          'error',
-          {
-            // Any assertion whose operand is itself an assertion (`as unknown as T`,
-            // `as never as T`, `<T>(<unknown>x)`, ...) is a way around the type system.
-            selector:
-              ':matches(TSAsExpression, TSTypeAssertion) > :matches(TSAsExpression, TSTypeAssertion).expression',
-            message:
-              'Chained type assertions defeat the type system. Validate with zod or narrow properly.',
-          },
-          {
-            selector: `MemberExpression[computed=false][property.name=${DISABLED_TEST_MODIFIERS}]`,
-            message:
-              'Skipped, focused, or todo tests are not allowed. Write the test or delete it.',
-          },
-          {
-            selector: `MemberExpression[computed=true][property.value=${DISABLED_TEST_MODIFIERS}]`,
-            message:
-              'Skipped, focused, or todo tests are not allowed. Write the test or delete it.',
-          },
-        ],
+        'no-restricted-syntax': ['error', CHAINED_ASSERTION],
+      },
+    },
+    {
+      // Flat config replaces rule options wholesale, so repeat the chained-assertion selector.
+      files: TEST_FILES,
+      rules: {
+        'no-restricted-syntax': ['error', CHAINED_ASSERTION, ...SKIPPED_TEST_SELECTORS],
       },
     },
     {

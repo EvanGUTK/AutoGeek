@@ -104,3 +104,34 @@ describe('real ESLint CLI over a tree with a nested config', () => {
     expect(outcome.output).toContain('@typescript-eslint/no-explicit-any');
   });
 });
+
+let fixtureCounter = 0;
+
+/** Lints one file through the real CLI, exactly as `pnpm lint:eslint` does, and returns the output. */
+async function lintFile(source: string, suffix = '.ts'): Promise<CliOutcome> {
+  fixtureCounter += 1;
+  const relative = join('packages', 'policy', 'src', `case${String(fixtureCounter)}${suffix}`);
+  await mkdir(join(sandbox, 'packages', 'policy', 'src'), { recursive: true });
+  await writeFile(join(sandbox, relative), source);
+  return runEslint(['--config', 'eslint.config.js', relative, '--max-warnings', '0']);
+}
+
+describe('skipped-test lint is scoped to test files (real CLI)', () => {
+  const product =
+    'declare const cursor: { skip: (n: number) => number };\ndeclare const filter: { only: boolean; todo: string[] };\n' +
+    'export const next = cursor.skip(2);\nexport const n = filter.only ? filter.todo.length : 0;\n';
+
+  it('leaves product code that has skip/only/todo members alone', async () => {
+    const outcome = await lintFile(product);
+    expect(outcome.exitCode).toBe(0);
+  });
+
+  it.each(['.test.ts', '.spec.ts'])('still bans skipping in a %s file', async (suffix) => {
+    const outcome = await lintFile(
+      "declare const it: { skip: (name: string) => void };\nit.skip('x');\n",
+      suffix,
+    );
+    expect(outcome.exitCode).not.toBe(0);
+    expect(outcome.output).toContain('Skipped, focused, or todo tests are not allowed');
+  });
+});
