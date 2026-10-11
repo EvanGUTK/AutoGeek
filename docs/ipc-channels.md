@@ -91,7 +91,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `not_found` | Target does not exist (file, run, terminal, credential, approval) |
 | `outside_workspace` | Resolved path escapes the trusted root(s) |
 | `user_declined` | The user declined a native confirmation dialog shown by main (protected path, trust, saved allow rule) |
-| `protected_path` | Hard-denied write to repository-integrity paths (`.git/{HEAD,index,objects}`); no dialog and no override |
+| `protected_path` | Hard-denied access to repository-integrity paths: everything under `.git/` except the confirm allowlist (§3 `workspace.readFile`); no dialog and no override |
 | `untrusted_workspace` | Operation needs a trusted workspace |
 | `too_long` | The text main must put in a native confirmation exceeds the dialog bound (`docs/ui-spec.md` §8); the operation is refused, never shown cut |
 | `conflict` | Stale write or run state conflict; `details.kind` says which (`paths_changed`, `run_active`, a disk change) |
@@ -169,7 +169,11 @@ names the root. Adding a key is a change to this table, reviewed like any contra
 
 ### `settings.set`
 - Input: `{ key: SettingKey; value: unknown }`. Main validates `value` against that key's schema.
-- Output: `{ key: SettingKey; value: SettingValue }` (the normalized stored value).
+- Output: `{ rev: number; key: SettingKey; value: SettingValue }` (the normalized stored value and
+  the revision it produced).
+- **Max-rev rule.** The renderer keeps the highest `rev` it has applied and ignores any reply or
+  `settings.changed` event whose `rev` is at or below it, so a late reply cannot roll back a newer
+  cross-window value. The same rule applies to the reply and to the event for the same write.
 - Errors: `unknown_key`, `invalid_input` (`details`: zod issue paths, no echo of the value for
   `agent.selection`).
 - The renderer debounces `layout` writes and does not write during a drag.
@@ -197,10 +201,19 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 - Errors: none beyond universal. New roots start untrusted until `workspace.setTrust`.
 
 ### `workspace.getState`
-- Input: `{}`. Output: `{ root: { name: string; trusted: boolean } | null; watch: WatchState }` where
-  `WatchState = { seq: number } & ({ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' })`.
-  `seq` is the sequence of the latest `workspace.fsWatchState` event reflected in `watch`; main reads
-  the state and its `seq` atomically (ag-workspace to confirm).
+- Input: `{}`. Output: `{ stateSeq: number; root: { name: string; trusted: boolean } | null; watch: WatchState }` where
+  `stateSeq` is the sequence of the latest `workspace.stateChanged` reflected in `root`, and
+  `WatchState = { seq: number } & ({ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' })`,
+  where `seq` is the sequence of the latest `workspace.fsWatchState` event reflected in `watch`. Main
+  reads each state and its sequence atomically (confirmed by ag-workspace).
+
+### Event `workspace.stateChanged`
+- Payload: `{ seq: number; root: { name: string; trusted: boolean } | null }`. Emitted whenever the
+  open folder or its trust changes (`openFolder`, `setTrust`, closing the folder), so trust changes
+  have an event like everything else that is state. It is paired with `getState` the same way as the
+  other state events: subscribe and buffer, call `getState`, then apply buffered events whose `seq` is
+  above `stateSeq`. This also lets a second view stay consistent after the roles are split (D-010).
+  The event is approved by the chief; its exact shape is ag-workspace's to confirm.
 
 ### `workspace.setTrust`
 - Input: `{ trusted: boolean }` (applies to the current root, set only from the trust-prompt UI).
@@ -216,12 +229,13 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
 ### `workspace.listDir`
 - Input: `{ path: string }` (`''` = root).
 - Output: `{ entries: Array<{ name: string; kind: 'file' | 'dir' | 'symlink'; size?: number; ignored: 'yes' | 'no' | 'unknown' }>; ignoreRules: 'ok' | 'limit_exceeded'; truncated: boolean }`
-  sorted directories first, then files in name order. Symlinks are listed but never followed across
-  the root boundary.
+  Under the cap the order is directories first, then files, each by name. Symlinks are listed but never
+  followed across the root boundary.
 - **`truncated`:** `listDir` always stops at `LIST_DIR_MAX_ENTRIES` = 5,000 entries, reading the
   directory as a stream so memory and time stay bounded. `truncated: true` means there were more.
   This applies to every call. The 5,000 are the first the filesystem returned, then sorted, not the
-  alphabetically first, so the UI row reads "Showing 5,000 of more entries".
+  alphabetically first, so the UI row reads "Showing 5,000 of more entries". In a truncated listing the
+  5,000 entries are in filesystem order, with directories first within that page.
 - **`ignored` is tri-state and cosmetic only.** The matcher never runs `git` (trusted or not) and has
   hard input caps (ag-workspace, `docs/workspace-path-cases.md` §11). When a cap trips because of a
   hostile or broken `.gitignore`/`.ignore`, `listDir` still **succeeds**: every entry is `'unknown'`
@@ -253,10 +267,14 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
     renderer could spoof one) and the call resolves only after the user answers. Decline →
     `user_declined`. The call can therefore take arbitrarily long; the editor shows a "waiting for
     confirmation" state and no timeout. Confirmation is per call.
-  - **Hard-denied** (writes to `.git/{HEAD,index,objects}`): `protected_path`, no dialog and no
-    override. AutoGeek's own configuration and credential store answer `outside_workspace`, so
-    their existence is not confirmed. The editor explains a `protected_path` result in words and
-    offers no way around it.
+  - **Hard-denied**: `protected_path`, no dialog and no override, for **everything under `.git/`
+    except the confirm allowlist**, which still gets the native dialog: `.git/config`,
+    `.git/hooks/**`, `.git/info/exclude`, `.git/info/attributes`, a submodule's `modules/*/config` and
+    `modules/*/hooks/**`, and `worktrees/*/config.worktree`. A file named `.git` at any depth (a
+    gitlink containing `gitdir:`) is also confirmable. AutoGeek's own configuration and credential
+    store answer `outside_workspace`, so their existence is not confirmed. The editor explains a
+    `protected_path` result in words and offers no way around it. (ag-workspace,
+    `docs/workspace-path-cases.md` §7; confirmed by the chief.)
   Hardening of the dialog and the race between the answer and the I/O is in §9.4.
 
 ### `workspace.writeFile`
@@ -285,9 +303,12 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   - `overflow`: an event storm such as a large checkout. The renderer gets one rescan batch, and
     `ok` follows after the rescan.
   - `watch_error`: the root was removed or permission was lost.
-- `seq` increases by one per emitted event, per window. It is sent on every (debounced) transition.
+- `seq` increases by one per emitted event, **per process**, and is never reset when the root changes
+  (after a root change the renderer calls `getState` again). It is sent on every (debounced)
+  transition.
   Debouncing is on the **trailing edge**, so a flapping watcher ends on its latest state and sends at
-  most one event per window.
+  most one event per window of time; if it ends where it began, nothing is emitted and `seq` does not
+  increment.
 - **Sync, not "first message on subscribe".** `Bridge.subscribe` is renderer-local and main never
   learns about subscribers, so main cannot send state to a new one. The renderer follows the same
   pattern as agent events: subscribe and **buffer**, call `workspace.getState`, apply its `watch`,
