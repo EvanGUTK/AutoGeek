@@ -88,9 +88,22 @@ describe('eslint policy', () => {
     expect(text).toContain('@typescript-eslint/no-explicit-any');
   });
 
-  it('rejects double assertions through unknown', async () => {
-    const messages = await lint('export const n = "x" as unknown as number;\n');
+  it.each([
+    ['unknown', 'export const n = "x" as unknown as number;\n'],
+    ['never', 'export const n = "x" as never as number;\n'],
+    ['parenthesized', 'export const n = ("x" as unknown) as number;\n'],
+    ['angle brackets', 'export const n = <number>(<unknown>"x");\n'],
+    ['mixed', 'export const n = <number>("x" as unknown);\n'],
+  ])('rejects double assertions (%s)', async (_name, source) => {
+    const messages = await lint(source);
     expect(messages.join('\n')).toContain('no-restricted-syntax');
+  });
+
+  it('still allows a single assertion and as const', async () => {
+    const messages = await lint(
+      'export const tuple = [1, 2] as const;\nexport const n = (JSON.parse("1") as { a: number }).a;\n',
+    );
+    expect(messages.filter((m) => m.startsWith('no-restricted-syntax'))).toEqual([]);
   });
 
   it.each(['it.skip', 'it.only', 'it.todo', 'test.skip', 'describe.skip', 'describe.only'])(
