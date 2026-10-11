@@ -91,11 +91,26 @@ shape: disabled uses `--ag-text-subtle` at the same contrast as above plus a non
 
 State layering (hover, pressed) is expressed as a tint of `--ag-text` at 8% / 14% over the base
 surface, so it works on every surface without per-surface tokens. A tint lowers the contrast of
-secondary foregrounds (measured: dark `--ag-text-subtle` on a pressed selected row falls to 3.11),
-so **in hover, pressed and selected+hover states `--ag-text-muted`, `--ag-text-subtle` and
-`--ag-accent` text resolve to `--ag-text`**. The token test builds every surface × state
-(rest, hover, pressed) combination and fails the build below the floor, so the tables above cannot
-rot. Accent-filled buttons hover to
+foregrounds that sit on it (measured: dark `--ag-text-subtle` on a pressed selected row falls to
+3.11, light `--ag-warning` to 3.51, `--ag-border-strong` to 2.31 / 2.44). So in **hover, pressed and
+selected+hover states**:
+
+- `--ag-text-muted`, `--ag-text-subtle` and `--ag-accent` text resolve to `--ag-text`;
+- the status colors and `--ag-border-strong` resolve to **state variants**, measured as the worst
+  case over all five surfaces × rest, hover and pressed:
+
+| Token | Dark | Light | Min contrast (dark / light) | Floor |
+|---|---|---|---|---|
+| `--ag-danger-state` | `#ffa49c` | `#9e211a` | 4.68 / 4.63 | 4.5 |
+| `--ag-warning-state` | `#f2c264` | `#714a00` | 5.37 / 4.64 | 4.5 |
+| `--ag-success-state` | `#6fd39a` | `#175c35` | 4.86 / 4.75 | 4.5 |
+| `--ag-info-state` | `#7cc4ff` | `#0a5487` | 4.74 / 4.73 | 4.5 |
+| `--ag-border-strong-state` | `#9299a9` | `#656c7c` | 3.12 / 3.12 | 3.0 |
+
+A pressed Deny button in danger text therefore uses `--ag-danger-state`. The variants are
+chosen with a 0.1 margin over the floor. The `ui-kit` token test builds every surface × state
+(rest, hover, pressed) × foreground combination from the token source and fails the build below the
+floor, so these tables cannot rot. Accent-filled buttons hover to
 `#8ab8ff` (dark, 9.26 with on-accent) and `#084bb0` (light, 7.94 with on-accent).
 
 **Diff and risk** never rely on color alone: added lines carry `+` and `--ag-success`, removed
