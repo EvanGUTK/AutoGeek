@@ -145,6 +145,11 @@ boundaries explicit, which the loop needs to rebuild the assistant message in ve
    and that order is the replay order.
 2. Parallel tool calls are separate consecutive `tool_call` events. Their ids are unique within a
    response.
+3a. **Usage normalization.** `inputTokens` is UNCACHED input only: it excludes `cacheReadTokens` and
+   `cacheWriteTokens`, so the three plus `outputTokens` sum without double counting. Vendors differ
+   (some report cached tokens as a subset of their input count), so each adapter normalizes by
+   subtracting and the conformance suite asserts it with a fixture per vendor. `reasoningTokens` is
+   informational and must not be added to `outputTokens` unless the vendor excludes it from that count.
 3. `usage` appears at most once, immediately before the terminal event, as the final cumulative
    count. It is also emitted before an `error` terminal when the vendor reported usage, because a
    failed stream can still be billed. Local servers that report nothing omit it.
