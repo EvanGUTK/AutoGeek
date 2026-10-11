@@ -1,4 +1,4 @@
-import { ModelInfoSchema, ModelRequestSchema, err, ok, providerError } from '@autogeek/core';
+import { ModelInfoSchema, ModelRequestSchema, ok, providerError } from '@autogeek/core';
 import type {
   ModelEvent,
   ModelInfo,
@@ -10,13 +10,13 @@ import type {
   Support,
 } from '@autogeek/core';
 import { z } from 'zod';
-import { openStream, readText } from '../../http/transport.ts';
 import type { TransportDeps, TransportTimeouts } from '../../http/transport.ts';
 import type { RetryPolicy } from '../../http/retry.ts';
 import { guardStream } from '../../stream/guard.ts';
 import { createEventWriter } from '../../stream/writer.ts';
 import { checkCredential, endpoint } from '../../credential.ts';
 import type { ProviderCredential } from '../../credential.ts';
+import { parseJsonOrUndefined, requestJson } from '../http-json.ts';
 import { runSseStream } from '../sse-driver.ts';
 import { anthropicProfile } from './models.ts';
 import { ANTHROPIC_PROVIDER_ID, buildAnthropicBody } from './request.ts';
@@ -25,7 +25,6 @@ import { createAnthropicStream, errorKind } from './stream.ts';
 /** The only origin Anthropic requests may go to (the catalog's fixed endpoint). */
 export const ANTHROPIC_ORIGIN = 'https://api.anthropic.com';
 const API_VERSION = '2023-06-01';
-const MAX_LIST_BYTES = 4 * 1024 * 1024;
 const MAX_LIST_PAGES = 20;
 
 const REQUIREMENTS = {
@@ -121,12 +120,12 @@ export function createAnthropicProvider(
     },
   };
 
-  async function fetchModelPage(
+  function fetchModelPage(
     url: string,
     credential: ProviderCredential,
     signal: AbortSignal,
   ): Promise<Result<z.infer<typeof ModelPageSchema>, ProviderError>> {
-    const opened = await openStream(
+    return requestJson(
       {
         providerId: ANTHROPIC_PROVIDER_ID,
         url,
@@ -137,14 +136,8 @@ export function createAnthropicProvider(
         ...transportOptions,
       },
       deps,
+      ModelPageSchema,
     );
-    if (!opened.ok) return opened;
-    const text = await readText(opened.value, ANTHROPIC_PROVIDER_ID, MAX_LIST_BYTES);
-    if (!text.ok) return text;
-    const page = ModelPageSchema.safeParse(parseJson(text.value));
-    return page.success
-      ? ok(page.data)
-      : err(providerError('invalid_response', ANTHROPIC_PROVIDER_ID));
   }
 }
 
@@ -173,7 +166,7 @@ export function classifyAnthropicError(
   _status: number,
   body: string,
 ): ProviderErrorKind | undefined {
-  const parsed = ErrorBodySchema.safeParse(parseJson(body));
+  const parsed = ErrorBodySchema.safeParse(parseJsonOrUndefined(body));
   if (!parsed.success) return undefined;
   const { type, message = '', details } = parsed.data.error;
   if (type === 'billing_error' || details?.error_code === 'enforced_spend_limit_reached')
@@ -230,14 +223,4 @@ function toModelInfo(entry: unknown): ModelInfo | undefined {
     source: 'api',
   };
   return ModelInfoSchema.safeParse(info).success ? info : undefined;
-}
-
-function parseJson(text: string): unknown {
-  try {
-    const value: unknown = JSON.parse(text);
-    return value;
-  } catch (error) {
-    if (error instanceof SyntaxError) return undefined;
-    throw error;
-  }
 }
