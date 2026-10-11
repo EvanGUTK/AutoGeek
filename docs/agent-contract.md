@@ -411,7 +411,7 @@ Paths in outputs (`restores`, `restored`, `conflicts`, `getRunDiff`) are root-re
 | `permissions.listSessionApprovals` | `{}` | `{ items: Array<{ ruleId; toolName; action: WireAction; createdAt }> }` | none |
 | `permissions.revokeSessionApproval` | `{ ruleId }` | `{}` | `not_found` |
 | `permissions.listRules` | `{}` | `{ rules: PolicyRule[] }` (global + current root) | none |
-| `permissions.addRule` | `{ rule: PolicyRuleInput }` | `{ ruleId }` | `invalid_input`, `user_declined` (native confirm refused) |
+| `permissions.addRule` | `{ rule: PolicyRuleInput }` | `{ ruleId }` | `invalid_input`, `too_long` [chief] (the rule's native-confirm text would exceed its bound; rejected, never truncated), `user_declined` (native confirm refused) |
 | `permissions.removeRule` | `{ ruleId }` | `{}` | `not_found` |
 
 `addRule`:
