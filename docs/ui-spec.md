@@ -581,18 +581,22 @@ The tree is a virtualized list (§3.8) driven by `workspace.listDir` per expande
 `workspace.fsChanged`; the renderer never polls. Each directory is listed on expand, and a
 `fsChanged` for an expanded directory re-lists it.
 
-- **`truncated`:** a directory with more than the cap shows the first 5,000 entries and a final row
-  "Showing the first 5,000 entries". The row is text, not an error.
+- **`truncated`:** a directory with more than the cap shows 5,000 entries and a final row "Showing
+  5,000 of more entries". The 5,000 are the first the filesystem returned, then sorted, not the
+  alphabetically first, so the row does not say "first". It is text, not an error.
 - **`ignored`:** `'yes'` entries are dimmed (still readable by contrast, with a text cue in their
   accessible name, "ignored"), and a setting can hide them. `'unknown'` entries look normal. When
   `ignoreRules` is `'limit_exceeded'`, the directory shows a banner "This folder has ignore rules that
   are too large to read, so ignored files can't be marked." and nothing is hidden on that basis.
 - **No security meaning:** `ignored` is cosmetic. No badge, prompt or behavior is derived from it;
   protection is main's decision and arrives only as the errors on `readFile`/`writeFile`.
-- **Degraded watching:** the degraded-state event from ag-workspace shows a notice "File watching is
-  limited in this folder", and the tree keeps working from explicit refreshes.
-- Names are untrusted: a file name goes through `displaySafeLiteral` (inline mode), so bidi and
-  zero-width tricks in a name are visible. The accessible name carries the displayed form.
+- **Degraded watching:** `workspace.fsWatchState` with `state: 'degraded'` (any of its four reasons)
+  shows a notice "File watching is limited in this folder", and the tree keeps working from explicit
+  refreshes. The state returning to `ok` clears the notice.
+- Names are untrusted: a file name goes through `displaySafeLiteral` in inline mode (a name is at most
+  255 bytes, so it is never omitted), so bidi and zero-width tricks are visible. The **accessible
+  name and tooltip come from `describeForSpeech` (§8.5)**, with the cue "ignored" appended when
+  relevant, never from the raw name. The raw `name` is the only input to paths, IPC and keys.
 
 ## 5. Approval-prompt UX
 
@@ -940,10 +944,25 @@ interface DisplaySafe {
   flags: { mixedScript: boolean; confusable: boolean };
   flagged: Array<[start: number, end: number]>;          // code-point ranges of tokens that set a flag
 }
-// Two exports, so a field that is part of what runs can never be rendered in prose mode by mistake:
-declare function displaySafeLiteral(input: string, options: DisplaySafeOptions): Result<DisplaySafe, 'too_long'>;
-declare function displaySafeProse(input: string, options: DisplaySafeOptions): Result<DisplaySafe, 'too_long'>;
+// Two exports with branded outputs, so a field that is part of what runs can never be rendered in
+// prose mode by mistake. The brands exist only in the type system and are produced only inside core.
+declare const literalBrand: unique symbol;
+declare const proseBrand: unique symbol;
+type LiteralText = DisplaySafe & { readonly [literalBrand]: true };
+type ProseText = DisplaySafe & { readonly [proseBrand]: true };
+declare function displaySafeLiteral(input: string, options: DisplaySafeOptions): Result<LiteralText, 'too_long'>;
+declare function displaySafeProse(input: string, options: DisplaySafeOptions): Result<ProseText, 'too_long'>;
+declare function describeForSpeech(text: DisplaySafe): string;   // §8.5
 ```
+
+**Requirement (branded types).** The action-block, native-dialog text, tool-name, server-name and
+file-name renderers accept **only `LiteralText`**; the description and plan components accept only
+`ProseText`. Neither brand is exported as a constructor, so the only way to obtain one is the matching
+function, and converting one into the other would need `as unknown as`, which the project bans. A
+type-level test using Vitest's `expectTypeOf` (not `@ts-expect-error`, also banned) asserts that
+`ProseText` is not assignable to `LiteralText` and that each renderer's prop type is exactly its
+brand. The lint rule on importing `displaySafeProse` stays as the early signal, but a re-export
+through an allowed module or barrel cannot defeat the types.
 
 `displaySafeLiteral` is for every action field (command, argv, cwd, paths, URLs, env, MCP names and
 input), native-dialog text, tool and server names, and anything else that is part of what runs or
@@ -1072,5 +1091,32 @@ For arbitrary strings (including lone surrogates and long runs):
   the same text segments.
 - **Totality and bounds:** it never throws, and runs in time linear in the input (checked on a 1 MiB
   input).
-- **Parity:** the main-process and renderer builds return the same `plain` for a fixed corpus of
-  10,000 generated strings.
+- **Parity:** the main-process and renderer builds return the same `plain` and the same
+  `describeForSpeech` for a fixed corpus of 10,000 generated strings.
+
+### 8.5 Spoken form (accessible names)
+
+A screen reader reads the raw characters of a name or command and says nothing about hidden or
+look-alike ones, so an accessible name built from the raw string reads as clean text. Core therefore
+exports `describeForSpeech(text)`, and every accessible name, tooltip and live announcement for an
+untrusted string is built from it, never from the raw string.
+
+- Text segments are kept as they are. Other segments become spoken markers: `escape` →
+  `hidden character U+XXXX`, `tab` → `tab`, `collapsed` → `N spaces`, `N blank lines` or
+  `N combining marks`, `omitted` → `N more characters`.
+- Pieces are joined with a single space, with no added punctuation, so the output is deterministic.
+- When `flags.mixedScript` or `flags.confusable` is set, `possible look-alike characters` is appended.
+- The visible chips are `aria-hidden`, so a marker is not read twice. The tooltip uses the same
+  string.
+- The raw string remains the only input for paths, IPC and keys. The spoken form is for people.
+
+| Input | `describeForSpeech` |
+|---|---|
+| `ls` | `ls` |
+| `invoice\u202Efdp.exe` | `invoice hidden character U+202E fdp.exe` |
+| `a` + 20 spaces + `b` | `a 20 spaces b` |
+| `a\tb` | `a tab b` |
+| `x\n` + 5 blank lines + `y` | `x 5 blank lines y` |
+| `e` + 20 × `\u0301` | `e 20 combining marks` |
+| `p\u0430ypal` (Cyrillic а) | `pаypal possible look-alike characters` |
+| 300 × `a`, `inline`, `maxChars: 256` | 256 `a` then `44 more characters` |
