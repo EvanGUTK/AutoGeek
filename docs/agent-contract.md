@@ -116,6 +116,13 @@ A **session grant** is an in-memory rule that matches **exactly** the approved a
 
 Grants are keyed by the root realpath and cleared on root change and on `setTrust(false)` [chief]
 (desktop calls `grants.clear(rootKey)`).
+**Exec grants do not pin what the command runs** [chief]. A session grant for `make test` or `npm test`
+matches argv, not the Makefile recipe or `package.json` script behind it. Therefore any *approved write to
+an exec-vector file* (ag-workspace's elevated `exec_vector` set, including build/manifest files such as
+`package.json` and Makefiles) CLEARS all `exec` / `exec_shell` session grants for that root, so the next
+run asks again. (Edits to ordinary source and test files do not clear grants; those are the agent's normal
+work and the user reviews their diffs.) Writes the tool never sees (the user's own edits, other tools)
+cannot be detected, which `docs/SECURITY.md` must state.
 The gate builds it from the request; nothing else can build one. The approver can only return an
 `ApprovalOption`. Its lifetime is the app session, per root. It can be revoked via
 `permissions.revokeSessionApproval`.
