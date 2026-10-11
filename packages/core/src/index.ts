@@ -48,3 +48,11 @@ export { ToolResultSchema, errorResult, textResult } from './tool.ts';
 export type { TextResultOptions, Tool, ToolContext, ToolResult } from './tool.ts';
 export { andThen, err, map, mapErr, ok, unwrapOr } from './result.ts';
 export type { Err, Ok, Result } from './result.ts';
+export {
+  ContentPartSchema,
+  MessageSchema,
+  ProviderMetadataSchema,
+  ROLES,
+  RoleSchema,
+} from './model/message.ts';
+export type { ContentPart, Message, ProviderMetadata, Role } from './model/message.ts';
