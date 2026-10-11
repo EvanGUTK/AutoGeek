@@ -92,8 +92,23 @@ interface ModelRequest {
     visibility?: 'summary' | 'hidden';  // default 'summary' (Anthropic display, OpenAI summary, Gemini includeThoughts)
   };
   stopSequences?: string[];
+  // 'preserve' (default): adapters replay reasoning parts byte-exact (dropping foreign-origin ones).
+  // 'drop': recovery path — adapters omit reasoning parts from replayed history, except where the
+  // vendor requires the current in-progress tool-use turn's reasoning (adapter's responsibility).
+  // The loop sets 'drop' only to recover from an `invalid_request` caused by edited history.
+  reasoningReplay?: 'preserve' | 'drop';
 }
 ```
+
+**History is append-only (loop invariant).** Preserved/signed reasoning is valid only if the
+prefix before it (system, tools, earlier messages) is unchanged. Editing or compacting earlier
+turns, or changing the system prompt/tool list mid-conversation, can make a vendor return 400 or
+silently discard reasoning. Therefore: never rewrite earlier messages in place; deliver
+mid-conversation operator instructions as appended `system` messages; compaction starts a new
+prefix and must drop reasoning parts (those with `providerMetadata`) from the summarized region;
+checkpoint restore may truncate (a prefix) but must not edit-then-continue. Source: ag-providers'
+wire research of the Anthropic docs (preserved thinking; date-gated 400 vs. silent loss) — cite the
+exact doc URLs in the adapter and re-verify when models change.
 
 Left out on purpose: `temperature`/`top_p`. Current Anthropic models reject them with a 400, and
 reasoning models elsewhere ignore or reject them. If we need them later, they get added
