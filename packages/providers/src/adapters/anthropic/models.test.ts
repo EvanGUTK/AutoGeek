@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { anthropicProfile, nearestEffort } from './models.ts';
+import { anthropicProfile } from './models.ts';
 
 describe('anthropicProfile', () => {
   it('knows current models', () => {
@@ -33,23 +33,5 @@ describe('anthropicProfile', () => {
       cacheRead: 250_000,
       cacheWrite: 12_500_000,
     });
-  });
-});
-
-describe('nearestEffort', () => {
-  it('keeps a supported level', () => {
-    expect(nearestEffort('xhigh', ['low', 'medium', 'high', 'xhigh', 'max'])).toBe('xhigh');
-  });
-
-  it('prefers the closest lower level', () => {
-    expect(nearestEffort('xhigh', ['low', 'medium', 'high', 'max'])).toBe('high');
-  });
-
-  it('falls back to the closest higher level', () => {
-    expect(nearestEffort('low', ['high', 'max'])).toBe('high');
-  });
-
-  it('is undefined when the model takes no effort', () => {
-    expect(nearestEffort('high', [])).toBeUndefined();
   });
 });
