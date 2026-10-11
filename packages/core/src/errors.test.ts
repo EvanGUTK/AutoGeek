@@ -5,6 +5,7 @@ import {
   ERROR_CODES,
   ERROR_MESSAGES,
   coreError,
+  createCoreErrorSchema,
   fromZodError,
   isAbortError,
   toCoreError,
@@ -184,5 +185,61 @@ describe('toCoreError', () => {
   it('handles non-Error throwables', () => {
     expect(toCoreError('boom', 'ref-7').code).toBe('internal');
     expect(toCoreError(undefined, 'ref-8').code).toBe('internal');
+  });
+});
+
+describe('createCoreErrorSchema', () => {
+  const AuthDetails = z.strictObject({
+    domain: z.literal('auth'),
+    kind: z.enum(['store_corrupt', 'locked']),
+  });
+  const AuthErrorSchema = createCoreErrorSchema(
+    ['secure_storage_unavailable', 'internal'],
+    AuthDetails,
+  );
+  const message = ERROR_MESSAGES.secure_storage_unavailable;
+
+  it('accepts the declared details shape and a missing details field', () => {
+    const details = { domain: 'auth', kind: 'locked' };
+    expect(
+      AuthErrorSchema.safeParse({ code: 'secure_storage_unavailable', message, details }).success,
+    ).toBe(true);
+    expect(AuthErrorSchema.safeParse({ code: 'secure_storage_unavailable', message }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects details that do not match the declared shape', () => {
+    const bad = { domain: 'auth', kind: 'nope' };
+    expect(
+      AuthErrorSchema.safeParse({ code: 'secure_storage_unavailable', message, details: bad })
+        .success,
+    ).toBe(false);
+    expect(
+      AuthErrorSchema.safeParse({
+        code: 'secure_storage_unavailable',
+        message,
+        details: { domain: 'auth', kind: 'locked', path: '/secret' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects codes outside the allowed set even when the message matches', () => {
+    expect(
+      AuthErrorSchema.safeParse({ code: 'not_found', message: ERROR_MESSAGES.not_found }).success,
+    ).toBe(false);
+  });
+
+  it('keeps the constant-message invariant', () => {
+    expect(
+      AuthErrorSchema.safeParse({ code: 'secure_storage_unavailable', message: 'Keychain at /x' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('is what CoreErrorSchema is built from: any JSON details, every code', () => {
+    expect(
+      CoreErrorSchema.safeParse({ code: 'io', message: ERROR_MESSAGES.io, details: [1] }).success,
+    ).toBe(true);
   });
 });
