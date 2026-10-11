@@ -209,7 +209,8 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   the root boundary.
 - **`truncated`:** `listDir` always stops at `LIST_DIR_MAX_ENTRIES` = 5,000 entries, reading the
   directory as a stream so memory and time stay bounded. `truncated: true` means there were more.
-  This applies to every call. The UI row reads "Showing the first 5,000 entries".
+  This applies to every call. The 5,000 are the first the filesystem returned, then sorted, not the
+  alphabetically first, so the UI row reads "Showing 5,000 of more entries".
 - **`ignored` is tri-state and cosmetic only.** The matcher never runs `git` (trusted or not) and has
   hard input caps (ag-workspace, `docs/workspace-path-cases.md` §11). When a cap trips because of a
   hostile or broken `.gitignore`/`.ignore`, `listDir` still **succeeds**: every entry is `'unknown'`
@@ -261,8 +262,23 @@ make git run programs. Containment and the sensitive-path rules apply in both mo
   coalesced and ignore-rule filtered in main; there is no per-file subscribe channel).
 - The tree and open editors reconcile from this; the renderer never polls.
 - If the ignore matcher hits a cap, the watcher falls back to fixed excludes (`.git`,
-  `node_modules`) and ag-workspace emits a degraded-state event (its name and payload are theirs to
-  define). The UI shows a notice "File watching is limited in this folder" and keeps working.
+  `node_modules`). Watcher health is reported by the event below.
+
+### Event `workspace.fsWatchState`
+- Payload: `{ state: 'ok' }` or `{ state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' }`.
+  The `reason` enum is closed and exactly these four values; the payload has no paths and no message
+  strings. Approved by the chief.
+  - `ignore_rules_limit`: the ignore caps tripped, so the fixed excludes apply.
+  - `watch_limit`: the OS watch limit was hit.
+  - `overflow`: an event storm such as a large checkout. The renderer gets one rescan batch, and
+    `ok` follows after the rescan.
+  - `watch_error`: the root was removed or permission was lost.
+- It is sent on every transition, **and once, first, to every new subscription**, so a reloaded
+  renderer re-syncs without asking. Transitions are debounced, so a flapping watcher sends at most
+  one event per window. `workspace.fsChanged` keeps its shape and batches keep arriving while
+  degraded.
+- The UI shows "File watching is limited in this folder" for all four reasons and clears it on `ok`.
+  `watch_error` also tells the user the folder may have been removed or become unreadable.
 
 ### `git.status`
 - Input: `{}`. Output: `{ branch: string | null; entries: Array<{ path: string; state: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted'; staged: boolean }> }`.
