@@ -59,3 +59,5 @@ export {
 export type { ModelEvent, ModelUsage, StopReason } from './model/event.ts';
 export { checkModelEventOrder } from './model/event-order.ts';
 export type { OrderRule, OrderViolation } from './model/event-order.ts';
+export { ModelRequestSchema, REASONING_EFFORTS, ToolSpecSchema } from './model/request.ts';
+export type { ModelRequest, ToolSpec } from './model/request.ts';
