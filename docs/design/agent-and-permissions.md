@@ -90,6 +90,10 @@ core `check()` is the same call narrowed to `PermissionDecision`.
 - A redacted value, or a key the injected `EnvKeyClassifier` (a core port, implemented by
   ag-workspace per L-005) doesn't call benign, makes the action elevated.
 - Grants are per root and cleared on root change and on `setTrust(false)`.
+- Any allowed `fs_write` touching an exec vector (injected `ExecVectorClassifier`, a core port
+  implemented by ag-workspace) clears that root's exec and exec_shell grants (contract §2).
+  Exec side effects and the user's own edits can't be seen by the gate. `docs/SECURITY.md`
+  records that.
 
 **Injection invariant, enforced by structure as well as tests:**
 - No function in the package builds a rule from anything except (a) a validated `PolicyRuleInput`

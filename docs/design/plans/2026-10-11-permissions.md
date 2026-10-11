@@ -53,6 +53,14 @@ The contract wins on any difference.
   - `argv` / `argv_prefix` / `shell` rules never match a request with a non-empty `env`;
   - session-grant keys include `class` and canonical `env`;
   - grants are per root and cleared on root change and on `setTrust(false)`.
+- **Exec-vector writes (contract §2):**
+  - any `allow` for an `fs_write` (any op) whose `path` or `to` is an exec vector clears that
+    root's `exec` / `exec_shell` session grants;
+  - `fs_read`, `fs_write` and `mcp` grants stay;
+  - audited as `grants_cleared` with reason `exec_vector_write`;
+  - the predicate is the injected core port `ExecVectorClassifier` (ag-workspace's table);
+  - a throw counts as an exec vector, plus a warning;
+  - no classifier, no gate.
 - **The env-key allowlist is ag-workspace's** (L-005). permissions consumes it through the core
   port `EnvKeyClassifier`, which ag-agent defines in core in Task 0. The chief granted edit
   rights to that one file plus its one registration line. The classifier is never optional:
@@ -88,7 +96,7 @@ The contract wins on any difference.
 
 ---
 
-### Task 0: `EnvKeyClassifier` port in core (chief-granted file)
+### Task 0: `EnvKeyClassifier` and `ExecVectorClassifier` ports in core (chief-granted files)
 
 **Files:**
 - Create: `packages/core/src/ports/env-key-classifier.ts`, or the equivalent location in
@@ -114,6 +122,15 @@ Nothing else in core is touched.
   ag-workspace implements the port by calling this factory with its reviewed allowlist, so the
   invariants live in tested core code, not in each implementation.
 
+- Also produces (second file, `src/ports/exec-vector-classifier.ts`, one more export line):
+  `interface ExecVectorClassifier { isExecVector(rootRelativePath: string): boolean }`.
+  The doc comment, as agreed with ag-workspace:
+  - input is POSIX, root-relative, with no leading `./`;
+  - matching is case-INSENSITIVE, because more matches means more clearing, which is safer;
+  - anything not classified with confidence ⇒ `true`.
+
+  This is an interface only. ag-workspace's tests own the table, and core has no runtime code
+  for it.
 - [ ] **Step 1: Write the failing tests:**
   - `CI` benign and `ci` not, when only `CI` is allowlisted;
   - unknown → false;
@@ -130,7 +147,8 @@ Nothing else in core is touched.
 
   ag-agent asks ag-workspace to add it when the list lands. Before slice 1's second review
   request, check that it exists.
-- [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`. The body
+- [ ] **Step 5: Commit** `feat(core): add EnvKeyClassifier port for benign env keys`, then
+  `feat(core): add ExecVectorClassifier port` (a separate atomic commit). The body
   cites the chief's grant (edit rights to this file only) and L-005.
 
 ### Task 1: Package scaffold and pure helpers
@@ -298,8 +316,9 @@ Semantics:
     - mcp: `[tool,'mcp',server,toolName,input]`
     - network: never a grant, so throw a programmer error.
   - `createSessionGrantStore(deps: { clock: () => number; newId: () => string }): SessionGrantStore`
-  - `interface SessionGrantStore extends SessionGrantMatcher { grant(rootKey: string, req: PermissionRequest): SessionGrant; list(rootKey: string): readonly SessionGrant[]; revoke(id: string): boolean; clear(rootKey: string): readonly SessionGrant[] }`.
-    `clear` returns the removed grants so the caller can audit them.
+  - `interface SessionGrantStore extends SessionGrantMatcher { grant(rootKey: string, req: PermissionRequest): SessionGrant; list(rootKey: string): readonly SessionGrant[]; revoke(id: string): boolean; clear(rootKey: string): readonly SessionGrant[]; clearExec(rootKey: string): readonly SessionGrant[] }`.
+    `clear` and `clearExec` return the removed grants so the caller can audit them. `clearExec`
+    removes only `exec` / `exec_shell` grants.
   - `interface SessionGrant { id: string; rootKey: string; key: string; tool: string; action: PermissionAction; createdAt: number }`
 
 - [ ] **Step 1: Write the failing tests.**
@@ -308,6 +327,7 @@ Semantics:
   - `description` and provenance don't affect the key;
   - a grant made under root A doesn't match the same request under root B;
   - `clear(rootKey)` removes only that root's grants and returns them;
+  - `clearExec(rootKey)` removes only that root's exec and exec_shell grants;
   - an exec grant doesn't match the same argv with a different env value, an added env key,
     or a different `class`;
   - `revoke` removes the grant and returns false for an unknown id;
@@ -326,7 +346,7 @@ alongside.
     `Bearer\s+\S+`, `sk-[A-Za-z0-9_-]{16,}`, `gh[pousr]_[A-Za-z0-9]{20,}`, `AKIA[0-9A-Z]{16}`,
     `(?i)(password|passwd|secret|token|api[_-]?key)=[^\s&]+`, `xox[baprs]-[A-Za-z0-9-]{10,}`.
     If foundation ships a core redactor, use it instead and delete this file.
-  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked'; count: number })`
+  - `type AuditEntry = { v: 1; at: number } & ({ kind: 'decision'; provenance; tool; risk; action: AuditAction; literal: string; decision: PermissionDecision; via: DecisionVia; ruleId?: string } | { kind: 'gate_violation'; provenance; tool } | { kind: 'rule_added' | 'rule_removed'; rule: PolicyRule } | { kind: 'grant_added' | 'grant_revoked'; grant: { id; key } } | { kind: 'grants_cleared'; rootKey: string; reason: 'root_changed' | 'trust_revoked' | 'exec_vector_write'; count: number })`
   - `toAuditAction(action: PermissionAction): AuditAction`: `diff` is replaced by
     `diffBytes: number`. Every plain `env` value, `command`, `argv` element and `url` goes through
     `redactSecrets`. `{kind:'redacted'}` env values stay as they are.
@@ -385,13 +405,18 @@ alongside.
   - `interface ApprovalPrompt { approvalId: string; request: PermissionRequest; offered: readonly ApprovalOption[] }`
   - `interface DetailedDecision { decision: PermissionDecision; via: DecisionVia; ruleId?: string }`
   - `interface DetailedPermissionGate { checkDetailed(req: PermissionRequest, signal: AbortSignal): Promise<DetailedDecision> }`
-  - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; env: EnvKeyClassifier; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
+  - `createPermissionGate(deps: { workspace: { current(): { realpath: string; rootKey: string } | null }; trust: { isTrusted(realpath: string): boolean }; env: EnvKeyClassifier; execVectors: ExecVectorClassifier; rules: RuleStore; grants: SessionGrantStore; approver: Approver | null; audit: AuditSink; clock: () => number; onWarning(code: 'rules_unavailable', cause: string): void }): DetailedPermissionGate`
 
-`createPermissionGate` throws a `TypeError` when `deps.env?.isBenign` isn't a function. That's
+`createPermissionGate` throws a `TypeError` when `deps.env?.isBenign` or
+`deps.execVectors?.isExecVector` isn't a function. That's
 the runtime half; the required property is the type-level half. Test:
 `gate refuses to construct without a classifier`.
 
-Algorithm: design §2 steps 1–9. `approvalId = req.provenance.checkId`. The approver is raced
+Algorithm: design §2 steps 1–9. After step 7, when the decision is `allow` for an `fs_write`
+whose `path` or `to` is an exec vector (checked on root-relative paths; a throw counts as true and
+raises a warning), call `grants.clearExec(rootKey)` and audit `grants_cleared` /
+`exec_vector_write`. This happens even when the clear removes nothing, so the audit shows the
+trigger. `approvalId = req.provenance.checkId`. The approver is raced
 against `signal`. The audit `literal` is `redactSecrets(renderLiteral(action))`. An approver that rejects or returns a value outside `offered` → deny `user` /
 `user_deny`, audited. On `'session'`, call `grants.grant(root.rootKey, req)` and audit `grant_added`. When the
 audit append fails, return deny `policy` / `audit_failed`.
@@ -469,6 +494,12 @@ owner of each run.
     redacted value or a non-benign key.
   - `clear forgets`: after `clearSessionGrants(rootKey)`, every request previously allowed via
     `session_grant` under that root asks again.
+  - `exec-vector write re-arms exec approvals` (chief):
+    - grant `npm test` → approved write to `package.json` → the same exec asks again;
+    - grant → approved write to `src/a.ts` → still allowed via `session_grant`;
+    - a write to `package.json` under root A leaves root B's exec grants intact;
+    - fs and mcp grants survive an exec-vector write;
+    - a classifier that throws clears (fail closed).
   - `nothing is allowed without an affirmative allow`: every `allow` has via `rule`,
     `session_grant`, `baseline` or `user_once`/`user_session`, and an audit entry.
   - `index exports only the public surface`: an `Object.keys(await import('./index'))` snapshot.
