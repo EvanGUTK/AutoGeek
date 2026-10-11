@@ -417,7 +417,8 @@ alongside.
 
 **Interfaces:**
 - Produces:
-  - `interface RuleStore { load(rootKey: string): Promise<Result<readonly PolicyRule[], RuleStoreError>>; add(rootKey: string, input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError>>; remove(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>>; quarantine(rootKeys: readonly string[]): Promise<Result<{ count: number }, RuleStoreError>>; listQuarantined(rootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule }[], RuleStoreError>>; reactivate(args: { from: string; to: string; ruleIds: readonly string[] }): Promise<Result<{ count: number }, RuleStoreError | { code: 'not_found' | 'too_many' }>> }`
+  - `interface RuleStore { load(rootKey: string): Promise<Result<readonly PolicyRule[], RuleStoreError>>; add(rootKey: string, input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError>>; remove(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>>; quarantine(rootKeys: readonly string[]): Promise<Result<{ count: number }, RuleStoreError>>; listQuarantined(rootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule }[], RuleStoreError>>; reactivate(args: { from: string; to: string; ruleIds: readonly string[] }): Promise<Result<{ count: number }, RuleStoreError | { code: 'not_found' | 'too_many' }>> }`.
+    `reactivate` is a single atomic write: either every named rule moves or none does.
     - `load` returns only active rules: global ones, plus root-scoped ones under `rootKey` that
       aren't quarantined.
     - `quarantine` is idempotent and persisted.
@@ -460,6 +461,8 @@ alongside.
     root rules);
   - `reactivate moves only the named rules and enforces ≤ 50`;
   - a `rootKey` of `'__proto__'` round-trips safely;
+  - `reactivate is atomic` (inject a write failure: nothing moves, and the file stays
+    byte-identical);
   - a concurrent `add` doesn't lose a rule (serialized writes);
   - confirm-text snapshots for argv_prefix and mcp any-input;
   - `command allow rules warn that they survive script changes`: argv, argv_prefix and shell
@@ -514,7 +517,7 @@ audit append fails, return deny `policy` / `audit_failed`.
 **Interfaces:**
 - Produces:
   - `createApprovalBroker(deps: { emit(e: BrokerEvent): void; grants: SessionGrantStore; rules: RuleStore; workspace: …same as gate…; confirm(text: string): Promise<boolean>; audit: AuditSink }): ApprovalBroker`
-  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; listInactiveRules(previousRootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule; reason: 'identity_changed' }[], RuleStoreError>>; reactivateRules(args: { from: string; ruleIds: readonly string[] }): Promise<Result<{ count: number }, RuleStoreError | { code: 'not_found' | 'too_many' | 'user_declined' }>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
+  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; listInactiveRules(previousRootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule; reason: 'identity_changed' }[], RuleStoreError>>; reactivateRules(args: { from: string; ruleIds: readonly string[] }): Promise<Result<{ count: number; dropped: readonly { ruleId: string; reason: 'invalid_rule' }[] }, RuleStoreError | { code: 'not_found' | 'too_many' | 'user_declined' }>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
   - `type BrokerEvent = { type: 'approval_requested'; prompt: ApprovalPrompt } | { type: 'approval_resolved'; approvalId: string; outcome: 'allowed_once' | 'allowed_session' | 'denied' | 'run_stopped' }`
 
 Rules:
@@ -529,10 +532,18 @@ Rules:
   entry. desktop calls it on root change and on `setTrust(false)` (contract §11).
 - Every native-dialog text passes through core's display-safe function (contract §11) before
   `confirm` sees it.
-- `reactivateRules` builds a native confirm. Its text starts "This folder looks different from
-  the one these rules were made for. Reactivate:" and then lists every rule literally via
-  `describeRuleForConfirm`. Declining → `user_declined`, and nothing changes. On accept, it
-  calls `rules.reactivate({ from, to: currentRootKey, ruleIds })` and audits `rules_reactivated`.
+- `reactivateRules` (chief: all-or-nothing, re-validated):
+  1. Re-validate every named rule against the current core `PolicyRuleInput` schema, including
+     refinements. Invalid ones are **dropped from the batch**: they stay quarantined, are never
+     applied, and are reported in `dropped`.
+  2. Build a native confirm: "This folder looks different from the one these rules were made
+     for. Reactivate:", then each VALID rule literally via `describeRuleForConfirm`. That text
+     includes `PERSISTENT_EXEC_RULE_NOTICE` for command allow rules. If any were dropped, add
+     "N rule(s) could not be reactivated and stay inactive."
+  3. Decline → `user_declined`, and nothing changes. Accept → one atomic
+     `rules.reactivate({ from, to: currentRootKey, ruleIds: validIds })`, then audit
+     `rules_reactivated` with the moved and dropped ids.
+  4. If every named rule is invalid, there's no confirm. Return `{ count: 0, dropped }`.
   The audit `kind` union gains `'rules_quarantined' | 'rules_reactivated'` with
   `{ rootKeys | from, to, count }`.
 
@@ -541,7 +552,9 @@ owner of each run.
 
 - [ ] **Step 1: Write the failing tests:**
   - one per rule above;
-  - `approval_resolved is emitted exactly once per approval on every path`.
+  - `approval_resolved is emitted exactly once per approval on every path`;
+  - `reactivation drops invalid rules, confirms only valid ones, and is all-or-nothing`;
+  - `reactivation confirm shows the persistent exec-rule notice for command allow rules`.
 - [ ] **Steps 2–4**, **Step 5: Commit** `feat(permissions): add approval broker for the permissions channels`.
 
 ### Task 10: Injection-invariant property tests, and the public surface
