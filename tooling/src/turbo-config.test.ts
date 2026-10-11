@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { findOutsideReadsInTests, listWorkspaceDirectories } from './package-policy.ts';
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -48,5 +49,25 @@ describe('turbo cache configuration', () => {
     const dryRun = DryRun.parse(JSON.parse(json.slice(json.indexOf('{'))));
     const task = dryRun.tasks.find((t) => t.taskId === '@autogeek/tooling#test');
     expect(task?.resolvedTaskDefinition.cache).toBe(false);
+  });
+
+  it('never caches the test task of any package whose tests read outside it (review K2)', async () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const flagged: string[] = [];
+    for (const dir of await listWorkspaceDirectories(root)) {
+      if ((await findOutsideReadsInTests(root, dir)).length > 0) {
+        flagged.push(`@autogeek/${dir.split('/').pop() ?? dir}#test`);
+      }
+    }
+    // Both known cases must be detected, or the check itself is blind.
+    expect(flagged).toEqual(
+      expect.arrayContaining(['@autogeek/tooling#test', '@autogeek/core#test']),
+    );
+    const json = await turbo(['run', 'test', '--dry=json']);
+    const dryRun = DryRun.parse(JSON.parse(json.slice(json.indexOf('{'))));
+    for (const taskId of flagged) {
+      const task = dryRun.tasks.find((t) => t.taskId === taskId);
+      expect(task?.resolvedTaskDefinition.cache, `${taskId} must be uncached`).toBe(false);
+    }
   });
 });

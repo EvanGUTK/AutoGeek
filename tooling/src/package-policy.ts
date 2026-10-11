@@ -3,6 +3,7 @@ import { basename, join, resolve } from 'node:path';
 import ts from 'typescript';
 import { z } from 'zod';
 import type { PackageName } from './dependency-rules.ts';
+import { findOutsideReads } from './test-io.ts';
 
 export type PackageViolationCode =
   | 'not-a-package'
@@ -19,6 +20,7 @@ export type PackageViolationCode =
   | 'environment-leak'
   | 'tests-in-product-config'
   | 'test-config-gap'
+  | 'test-cache-unsafe'
   | 'weak-compiler-option'
   | 'missing-vitest-config'
   | 'vitest-config-bypass'
@@ -471,6 +473,75 @@ function isTestTimeoutLiteral(node: ts.Expression): boolean {
   );
 }
 
+const TurboSchema = z.looseObject({
+  tasks: z.record(z.string(), z.looseObject({ cache: z.boolean().optional() })).optional(),
+});
+
+/**
+ * The files that only the test tsconfig compiles (test files, test helpers, vitest.config.ts) and
+ * what in them can observe files outside the package. Empty means every test is self-contained.
+ */
+export async function findOutsideReadsInTests(root: string, dir: string): Promise<string[]> {
+  const product = loadTsconfig(root, dir, 'tsconfig.json');
+  const test = loadTsconfig(root, dir, 'tsconfig.test.json');
+  if (test === undefined) {
+    return [];
+  }
+  const productFiles = new Set((product?.parsed.fileNames ?? []).map((file) => resolve(file)));
+  const findings: string[] = [];
+  for (const file of test.parsed.fileNames) {
+    if (productFiles.has(resolve(file)) || file.includes('/node_modules/')) {
+      continue;
+    }
+    const relative = resolve(file).slice(resolve(root, dir).length + 1);
+    for (const finding of findOutsideReads(await readFile(file, 'utf8'))) {
+      findings.push(`${relative} ${finding}`);
+    }
+  }
+  return findings;
+}
+
+async function turboCachingDisabled(root: string, dir: string): Promise<boolean> {
+  const raw = await readFile(join(root, 'turbo.json'), 'utf8').then(
+    (text): string | undefined => text,
+    () => undefined,
+  );
+  if (raw === undefined) {
+    return false;
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return false; // unreadable turbo.json: fail closed
+  }
+  const tasks = TurboSchema.safeParse(json).data?.tasks ?? {};
+  return (
+    tasks[`@autogeek/${basename(dir)}#test`]?.cache === false || tasks['test']?.cache === false
+  );
+}
+
+/**
+ * A test that reads files outside its package (docs, root config, a child process) depends on
+ * state that is not in the package's turbo hash, so a cached "pass" can be stale. Such a package
+ * must have caching disabled for its test task. See LEARNINGS L-001 / review K2.
+ */
+async function checkTestCaching(root: string, dir: string): Promise<PackageViolation[]> {
+  const findings = await findOutsideReadsInTests(root, dir);
+  if (findings.length === 0 || (await turboCachingDisabled(root, dir))) {
+    return [];
+  }
+  return [
+    {
+      dir,
+      code: 'test-cache-unsafe',
+      detail:
+        `${dir} tests can read outside the package (${findings.join('; ')}); ` +
+        `set "@autogeek/${basename(dir)}#test": { "cache": false } in turbo.json`,
+    },
+  ];
+}
+
 async function checkVitest(root: string, dir: string): Promise<PackageViolation[]> {
   const path = join(root, dir, 'vitest.config.ts');
   if (!(await exists(path))) {
@@ -550,6 +621,7 @@ export async function checkPackage(root: string, dir: string): Promise<PackageVi
     ...environment.violations,
     ...product.violations,
     ...(await checkTestTsconfig(root, dir, product.options)),
+    ...(await checkTestCaching(root, dir)),
     ...(await checkVitest(root, dir)),
     ...(await checkForbiddenFiles(root, dir)),
     ...(await checkSurface(root, dir, manifest)),

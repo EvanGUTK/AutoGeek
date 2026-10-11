@@ -18,6 +18,9 @@
     "@autogeek/tooling#test": {
       "cache": false
     },
+    "@autogeek/core#test": {
+      "cache": false
+    },
     "dev": {
       "cache": false,
       "persistent": true
