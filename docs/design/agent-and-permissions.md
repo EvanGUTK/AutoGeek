@@ -90,10 +90,16 @@ core `check()` is the same call narrowed to `PermissionDecision`.
 - A redacted value, or a key the injected `EnvKeyClassifier` (a core port, implemented by
   ag-workspace per L-005) doesn't call benign, makes the action elevated.
 - Grants are per root and cleared on root change and on `setTrust(false)`.
-- Any allowed `fs_write` touching an exec vector (injected `ExecVectorClassifier`, a core port
-  implemented by ag-workspace) clears that root's exec and exec_shell grants (contract §2).
-  Exec side effects and the user's own edits can't be seen by the gate. `docs/SECURITY.md`
-  records that.
+- That root's exec and exec_shell grants are cleared (contract §2 and chief rulings) by:
+  - (a) any allowed `fs_write` touching an exec vector;
+  - (b) any allowed exec whose argv may rewrite exec vectors: git outside a read-only
+    allowlist, package-manager mutations, and shell strings that aren't one simple command;
+  - (c) a started call of a tool declaring `mutatesWorkTree` settling.
+
+  (a) and (b) use the injected `ExecVectorClassifier` port (`isExecVector`,
+  `execMayRewriteVectors`, `simpleArgvOf`; implemented by ag-workspace). (c) is reported by
+  the loop through `gate.noteWorkTreeMutated`. Arbitrary scripts' side effects and the user's
+  own edits stay invisible; `docs/SECURITY.md` records that residual.
 
 **Injection invariant, enforced by structure as well as tests:**
 - No function in the package builds a rule from anything except (a) a validated `PolicyRuleInput`
