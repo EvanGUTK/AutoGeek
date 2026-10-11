@@ -558,7 +558,7 @@ Rules:
      `rules_reactivated` with the moved and dropped ids.
   4. If every named rule is invalid, there's no confirm. Return `{ count: 0, dropped }`.
   5. If the combined confirm text would exceed `CONFIRM_TEXT_MAX`, return `too_long`
-     (proposed to the chief for contract §6). There's no confirm and no change, and the UI
+     (approved by the chief for contract §6). There's no confirm and no change, and the UI
      retries with fewer rules.
   The audit `kind` union gains `'rules_quarantined' | 'rules_reactivated'` with
   `{ rootKeys | from, to, count }`.
