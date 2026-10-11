@@ -418,7 +418,7 @@ Paths in outputs (`restores`, `restored`, `conflicts`, `getRunDiff`) are root-re
 | `permissions.listSessionApprovals` | `{}` | `{ items: Array<{ ruleId; toolName; action: WireAction; createdAt }> }` | none |
 | `permissions.revokeSessionApproval` | `{ ruleId }` | `{}` | `not_found` |
 | `permissions.listRules` | `{}` | `{ rules: PolicyRule[]; inactive: Array<{ rule: PolicyRule; reason: 'identity_changed' }> }` (global + current root; quarantined root rules are listed as inactive) | none |
-| `permissions.reactivateRules` | `{ ruleIds: string[] (1..50) }` | `{ count: number; dropped: Array<{ ruleId; reason }> }` | `not_found`, `too_many`, `user_declined`; main builds a native confirm listing each valid rule literally (display-safe); all-or-nothing for the valid set, atomic write |
+| `permissions.reactivateRules` | `{ ruleIds: string[] (1..50) }` | `{ count: number; dropped: Array<{ ruleId; reason }> }` | `not_found`, `too_many`, `too_long` (the combined native-confirm text would exceed `CONFIRM_TEXT_MAX`; rejected, never truncated; the UI retries with fewer ids), `user_declined`; main builds a native confirm listing each valid rule literally (display-safe); all-or-nothing for the valid set, atomic write |
 | `permissions.addRule` | `{ rule: PolicyRuleInput }` | `{ ruleId }` | `invalid_input`, `too_long` [chief] (the rule's native-confirm text would exceed its bound; rejected, never truncated), `user_declined` (native confirm refused) |
 | `permissions.removeRule` | `{ ruleId }` | `{}` | `not_found` |
 
@@ -533,7 +533,7 @@ authoritative statement.
 1. `exec_vector_write`: an allowed `fs_write` touching an exec vector (rename checked on both sides).
 2. `exec_vector_exec`: an allowed exec/exec_shell that `execMayRewriteVectors` marks mutating, or an exec_shell whose `simpleArgvOf` is null.
 3. `work_tree_mutated`: a STARTED call of a `mutatesWorkTree` tool settles in any way (rejected or skipped calls do not trigger it).
-4. `exec_vector_changed`: the tap reports a change; `watcher_unhealthy` / `watcher_degraded`: the tap is degraded, throws, times out, is missing, or `flush` fails.
+4. `exec_vector_changed`: the tap reports a change. `watcher_degraded`: the tap's own `degraded` event. `watcher_unhealthy` (distinct, not an alias): a failure the gate detects at check time (`isHealthy` false, a throw, a flush timeout or failure, or a missing tap).
 Before allowing any exec via a session grant the gate awaits `tap.flush(rootKey)` (bounded, default 1500 ms, plus the request signal); a failed flush clears, audits and asks. While the tap is unhealthy, exec actions get no `session` option. NOT cleared after arbitrary exec (it would nullify grants).
 Documented residuals (docs/SECURITY.md): one command that edits a vector and then runs it, command side effects, edits the tool/tap never sees, **persistent exact allow rules are not suspended** (explicit user choices; the agent's own writes to exec vectors are elevated so the user sees the diff). The native confirm and the rule editor carry `PERSISTENT_EXEC_RULE_NOTICE`, a core constant: "This rule keeps applying even if the files this command runs change (scripts, Makefiles, package.json, lockfiles, hooks)".
 
