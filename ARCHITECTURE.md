@@ -75,6 +75,8 @@ packages/
   workspace/               FS service, file watcher, git service, ignore rules, indexer, pty
   permissions/             PermissionGate: policy engine, approval requests, audit log
   ui-kit/                  Design tokens + shared React components
+tooling/                   Private workspace package: shared lint policy + dependency-boundary
+                           rules, with tests (not published, not imported by product code)
 docs/
   DECISIONS.md             ADR-style log of decisions and deferrals
   AGENT-PROTOCOL.md        How agents work, commit, review, and escalate
