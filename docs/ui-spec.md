@@ -972,12 +972,16 @@ minting a type-only brand. Therefore:
 - **Run time, always on:** each `LiteralText`-only renderer calls core's `isLiteralText(value)` on its
   prop in every build, tests, development **and production**; there is no flag that disables it. It
   **fails closed**: a value without the brand is never rendered. Instead the renderer shows the fixed
-  text "This content could not be displayed safely", reports a programmer error that carries no
-  content, and an approval card that hits this offers **Deny only**. A fabricated or cast value
+  text "This content could not be displayed safely" and reports a programmer error that carries no
+  content. An **approval card that hits this is denied automatically**, once, through the same path
+  as an unparseable payload (§5.5), and shows "A request could not be displayed safely and was
+  denied". The user cannot see the action, so there is nothing for them to decide, and leaving a
+  Deny-only card would just stall the run until its wall-time budget. A fabricated or cast value
   (including one produced by `as unknown as`) is therefore caught everywhere.
 - **Tests include the fabrication case:** a plain object cast to `LiteralText` renders the
-  placeholder (in test and in a production-mode build), an approval card built on it offers only
-  Deny, and a `ProseText` cannot reach an action block by any typed path.
+  placeholder (in test and in a production-mode build), an approval card built on it responds `deny`
+  exactly once and shows the notice, and a `ProseText` cannot reach an action block by any typed
+  path.
 
 The lint rule on importing `displaySafeProse` stays as the early signal, and a re-export through an
 allowed module or barrel cannot defeat the types or the run-time check.
