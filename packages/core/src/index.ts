@@ -1,3 +1,6 @@
+export { abortReason } from './abort.ts';
+export { createEmitter } from './emitter.ts';
+export type { EmitterOptions, ListenOptions, TypedEmitter, Unsubscribe } from './emitter.ts';
 export {
   CoreErrorSchema,
   ERROR_CODES,
