@@ -329,3 +329,7 @@ Sent on every transition and once when a window subscribes. `workspace.fsChanged
 | 12.4 | the watcher errors (root removed, permission lost) | `degraded` / `watch_error`; no retry storm (bounded backoff) |
 | 12.5 | recovery | `ok` is emitted; a test asserts there is no flapping inside the debounce window |
 | 12.6 | dispose | every handle is closed and no timer survives (asserted with a handle counter) |
+| 12.7 | payload content | the `reason` enum is closed and exactly the four values above; the zod schema is `.strict()`; no paths, no error messages and no other string from the repo or the OS can appear (a test feeds hostile file names and error strings and asserts the serialized payload contains none of them) |
+| 12.8 | subscribe snapshot | every new subscription (including a reloaded renderer) receives the current state first, whether `ok` or `degraded`, before any later transition |
+| 12.9 | flapping watcher (state alternates faster than the debounce window) | transitions are coalesced: at most one event per window carrying the final state, and no event at all if the state ends where it began; tested with fake timers |
+| 12.10 | channel placement | declared in the workspace domain channel file in `core` alongside the other `workspace.*` channels, with its trust requirement declared like the rest |
