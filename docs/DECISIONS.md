@@ -34,6 +34,22 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
   `stopReason` no longer includes `'error'`.
 - **Consequences:** see ARCHITECTURE.md §5.
 
+## D-005 Toolchain pins and repo-policy-as-code in `@autogeek/tooling`
+- **Status:** accepted (ag-foundation, pending chief confirmation)
+- **Context:** Latest `typescript` is 7.0.x, but `typescript-eslint` 8.71.1 (latest) peers
+  `typescript >=4.8.4 <6.1.0`, so type-aware linting does not support 7.x yet. Lint policy and
+  dependency rules are only trustworthy if they are themselves tested.
+- **Decision:** Pin `typescript` 6.0.3 until typescript-eslint supports a newer line, then revisit.
+  All dependency versions are exact and live in the pnpm `catalog:`. The lint policy
+  (`tooling/src/eslint-config.ts`) and the package-boundary matrix (`tooling/src/dependency-rules.ts`)
+  live in a private `@autogeek/tooling` workspace package with tests that run the real ESLint /
+  depcruise against fixture trees. `eslint.config.js` and `.dependency-cruiser.mjs` at the root are
+  thin wrappers. `noInlineConfig` is on, so no file can carry an `eslint-disable`.
+- **Consequences:** `tooling/` is an addition to the §4 layout. Dependency boundaries use
+  dependency-cruiser (cycles, unresolvable and undeclared imports for free) rather than
+  eslint-plugin-boundaries. Turborepo's `agentGuidance` is disabled so it does not write
+  `AGENTS.md`, which §7 reserves for project rules.
+
 ## D-006 Permission gate: tools call it, the loop wraps it (proposed by ag-agent)
 - **Status:** accepted (chief, 2026-10-11)
 - **Decision:** Tools call `ctx.gate.check(req, signal)` once per effect; the loop hard-denies tools
