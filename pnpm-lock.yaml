@@ -164,58 +164,73 @@ settings:
 
 catalogs:
   default:
+    '@eslint/js':
+      specifier: 10.0.1
+      version: 10.0.1
     '@types/node':
       specifier: 24.19.2
       version: 24.19.2
     dependency-cruiser:
       specifier: 18.5.0
       version: 18.5.0
+    eslint:
+      specifier: 10.12.0
+      version: 10.12.0
+    prettier:
+      specifier: 3.9.10
+      version: 3.9.10
+    turbo:
+      specifier: 2.11.7
+      version: 2.11.7
     typescript:
       specifier: 6.0.3
       version: 6.0.3
+    typescript-eslint:
+      specifier: 8.71.1
+      version: 8.71.1
     vitest:
       specifier: 5.0.3
       version: 5.0.3
     zod:
-      specifier: 4.6.6
-      version: 4.6.6
+      specifier: 4.6.5
+      version: 4.6.5
 
 importers:
 
   .:
     devDependencies:
       '@eslint/js':
-        specifier: 10.0.1
+        specifier: 'catalog:'
         version: 10.0.1(eslint@10.12.0(supports-color@7.2.0))
       '@types/node':
-        specifier: ^24.19.2
+        specifier: 'catalog:'
         version: 24.19.2
       dependency-cruiser:
         specifier: 'catalog:'
         version: 18.5.0
       eslint:
-        specifier: 10.12.0
+        specifier: 'catalog:'
         version: 10.12.0(supports-color@7.2.0)
       prettier:
-        specifier: 3.9.10
+        specifier: 'catalog:'
         version: 3.9.10
       turbo:
-        specifier: 2.11.7
+        specifier: 'catalog:'
         version: 2.11.7
       typescript:
-        specifier: 6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       typescript-eslint:
-        specifier: 8.71.1
+        specifier: 'catalog:'
         version: 8.71.1(eslint@10.12.0(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3)
       vitest:
-        specifier: 5.0.3
+        specifier: 'catalog:'
         version: 5.0.3(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2))
 
   tooling:
     devDependencies:
       '@eslint/js':
-        specifier: 10.0.1
+        specifier: 'catalog:'
         version: 10.0.1(eslint@10.12.0(supports-color@7.2.0))
       '@types/node':
         specifier: 'catalog:'
@@ -224,20 +239,20 @@ importers:
         specifier: 'catalog:'
         version: 18.5.0
       eslint:
-        specifier: 10.12.0
+        specifier: 'catalog:'
         version: 10.12.0(supports-color@7.2.0)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
       typescript-eslint:
-        specifier: 8.71.1
+        specifier: 'catalog:'
         version: 8.71.1(eslint@10.12.0(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3)
       vitest:
         specifier: 'catalog:'
         version: 5.0.3(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2))
       zod:
         specifier: 'catalog:'
-        version: 4.6.6
+        version: 4.6.5
 
 packages:
 
@@ -1218,8 +1233,8 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
-  zod@4.6.6:
-    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
 snapshots:
 
@@ -2057,4 +2072,4 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod@4.6.6: {}
+  zod@4.6.5: {}
