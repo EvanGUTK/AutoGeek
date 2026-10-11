@@ -114,6 +114,17 @@ its own ag-reviewer request:
 - `offered` always includes `'deny'` and is exactly what main accepts:
   - in-root actions: `['deny','once']`, plus `'session'` iff not elevated;
   - outside root: policy deny, no prompt.
+- **Root identity (chief ruling, ag-reviewer U1):**
+  - `rootKey` is an OPAQUE token from ag-workspace's trust store (realpath + identity). This
+    package never parses it.
+  - When the trust store reports an identity mismatch at open, desktop calls
+    `rules.quarantine(previousRootKeys)`. Those root-scoped rules are kept but not applied and
+    not deleted.
+  - They stay quarantined **even if the old identity, and so the old key, comes back**.
+  - They become active again only via `reactivate`, after a native main-built confirm that
+    lists them literally (display-safe, ≤ 50 rules per confirm).
+  - Global rules are unaffected. Session grants never survive an identity change, because the
+    new key has none and root change clears all grants.
 - Rule store unavailable ⇒ no rules **and no baseline auto-allow** (everything asks).
   Audit write failure ⇒ deny (`audit_failed`).
 - Commits: Conventional, atomic, explicit `git add <paths>`, trailer
@@ -406,11 +417,18 @@ alongside.
 
 **Interfaces:**
 - Produces:
-  - `interface RuleStore { load(rootKey: string): Promise<Result<readonly PolicyRule[], RuleStoreError>>; add(rootKey: string, input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError>>; remove(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
+  - `interface RuleStore { load(rootKey: string): Promise<Result<readonly PolicyRule[], RuleStoreError>>; add(rootKey: string, input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError>>; remove(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>>; quarantine(rootKeys: readonly string[]): Promise<Result<{ count: number }, RuleStoreError>>; listQuarantined(rootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule }[], RuleStoreError>>; reactivate(args: { from: string; to: string; ruleIds: readonly string[] }): Promise<Result<{ count: number }, RuleStoreError | { code: 'not_found' | 'too_many' }>> }`
+    - `load` returns only active rules: global ones, plus root-scoped ones under `rootKey` that
+      aren't quarantined.
+    - `quarantine` is idempotent and persisted.
+    - `reactivate` moves the named rules from `from` to `to`, clears their quarantine, and
+      accepts at most 50 ids (`too_many` otherwise).
   - `type RuleStoreError = { code: 'store_unreadable' | 'store_corrupt' | 'store_write_failed'; cause: string }`
   - `createJsonFileRuleStore(opts: { path: string; clock: () => number; newId: () => string }): RuleStore`
-    - The file holds `{ version: 1; global: PolicyRule[]; roots: Record<string, PolicyRule[]> }`,
-      zod-validated on every load.
+    - The file holds `{ version: 1; global: PolicyRule[]; roots: Record<string, { quarantined: boolean; rules: PolicyRule[] }> }`,
+      zod-validated on every load. Root keys are stored verbatim as opaque strings in a `Map`
+      and never used as object prototypes: parse with `z.record` into a `Map`, so `__proto__`
+      keys are safe.
     - A missing file means empty.
     - Corrupt → `store_corrupt`; don't rewrite or "repair".
     - Writes go to a temp file in the same dir (mode 0o600), then `fsync` + `rename`.
@@ -437,6 +455,11 @@ alongside.
   - `kind:'any'` with effect allow is rejected by core's `PolicyRuleInput` schema refinement
     (raise it with foundation if that's missing);
   - corrupt JSON → `store_corrupt`, and the file is left byte-identical;
+  - `quarantined rules are not loaded but are listed`;
+  - `quarantine survives reload and a restored key` (`quarantine(['k1'])` → `load('k1')` has no
+    root rules);
+  - `reactivate moves only the named rules and enforces ≤ 50`;
+  - a `rootKey` of `'__proto__'` round-trips safely;
   - a concurrent `add` doesn't lose a rule (serialized writes);
   - confirm-text snapshots for argv_prefix and mcp any-input;
   - `command allow rules warn that they survive script changes`: argv, argv_prefix and shell
@@ -491,7 +514,7 @@ audit append fails, return deny `policy` / `audit_failed`.
 **Interfaces:**
 - Produces:
   - `createApprovalBroker(deps: { emit(e: BrokerEvent): void; grants: SessionGrantStore; rules: RuleStore; workspace: …same as gate…; confirm(text: string): Promise<boolean>; audit: AuditSink }): ApprovalBroker`
-  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
+  - `interface ApprovalBroker extends Approver { respond(approvalId: string, option: ApprovalOption): Result<void, { code: 'not_found' | 'no_longer_pending' | 'invalid_input' }>; listPending(filter: (p: ApprovalPrompt) => boolean): readonly ApprovalPrompt[]; listSessionGrants(rootKey: string): readonly SessionGrant[]; clearSessionGrants(rootKey: string, reason: 'root_changed' | 'trust_revoked'): Promise<void>; revokeSessionGrant(id: string): Promise<Result<void, { code: 'not_found' }>>; listRules(): Promise<Result<readonly PolicyRule[], RuleStoreError>>; listInactiveRules(previousRootKeys: readonly string[]): Promise<Result<readonly { rootKey: string; rule: PolicyRule; reason: 'identity_changed' }[], RuleStoreError>>; reactivateRules(args: { from: string; ruleIds: readonly string[] }): Promise<Result<{ count: number }, RuleStoreError | { code: 'not_found' | 'too_many' | 'user_declined' }>>; addRule(input: PolicyRuleInput): Promise<Result<PolicyRule, RuleStoreError | { code: 'user_declined' }>>; removeRule(id: string): Promise<Result<void, RuleStoreError | { code: 'not_found' }>> }`
   - `type BrokerEvent = { type: 'approval_requested'; prompt: ApprovalPrompt } | { type: 'approval_resolved'; approvalId: string; outcome: 'allowed_once' | 'allowed_session' | 'denied' | 'run_stopped' }`
 
 Rules:
@@ -506,6 +529,12 @@ Rules:
   entry. desktop calls it on root change and on `setTrust(false)` (contract §11).
 - Every native-dialog text passes through core's display-safe function (contract §11) before
   `confirm` sees it.
+- `reactivateRules` builds a native confirm. Its text starts "This folder looks different from
+  the one these rules were made for. Reactivate:" and then lists every rule literally via
+  `describeRuleForConfirm`. Declining → `user_declined`, and nothing changes. On accept, it
+  calls `rules.reactivate({ from, to: currentRootKey, ruleIds })` and audits `rules_reactivated`.
+  The audit `kind` union gains `'rules_quarantined' | 'rules_reactivated'` with
+  `{ rootKeys | from, to, count }`.
 
 Window filtering stays with the caller (`listPending(filter)`). The agent runtime knows the
 owner of each run.
@@ -542,6 +571,14 @@ owner of each run.
     redacted value or a non-benign key.
   - `clear forgets`: after `clearSessionGrants(rootKey)`, every request previously allowed via
     `session_grant` under that root asks again.
+  - `root identity change` (chief):
+    - same path + new identity (new key, old key quarantined) ⇒ the old root rules are inactive
+      and no session grant matches;
+    - identity restored (old key again) ⇒ the rules are still inactive until `reactivateRules`
+      is confirmed;
+    - global rules are unaffected throughout;
+    - no generated sequence of open/quarantine/restore lets a grant or quarantined rule allow
+      anything.
   - `nothing is allowed without an affirmative allow`: every `allow` has via `rule`,
     `session_grant`, `baseline` or `user_once`/`user_session`, and an audit entry.
   - `index exports only the public surface`: an `Object.keys(await import('./index'))` snapshot.
