@@ -379,13 +379,25 @@ Data comes from `auth.list` (`CredentialRef`: label, provider, kind), the provid
 - `pricing` absent renders "Pricing unknown", and the spend meter for that model shows tokens only,
   with "cost unavailable" rather than a computed zero. `source: 'catalog' | 'default'` is labeled
   "estimated".
-- **Local servers.** The base URL is editable in model settings and shown next to the provider. A
-  connection failure (`ProviderErrorKind` `network` or `timeout` for a local provider) says to
-  check that the server is running and that the port matches, because default ports differ by
-  version (for example llama.cpp's). It does not guess a port.
+- **Endpoints.** The URL a provider sends your key and code to is security-critical, so it is not a
+  setting in the renderer. Hosted providers (Anthropic, OpenAI, Google, OpenRouter) show their fixed
+  catalog URL read-only (`baseUrl.editable: false`). Only OpenAI-compatible endpoints and the local
+  servers (Ollama, LM Studio, llama.cpp) show an editable field. Editing calls `models.setBaseUrl`;
+  **main** then shows a native confirmation, at the level it decides, that says the key and code
+  will be sent to the *new* host (old → new, punycode visible, an extra warning for non-loopback
+  `http:`). The UI only shows "Waiting for confirmation in the system dialog" and then the result:
+  success refreshes the credential and the model list, `user_declined` leaves the URL unchanged (not
+  an error), and `invalid_base_url` / `base_url_not_editable` get constant explanations (a URL with
+  embedded credentials or an unsupported scheme is rejected). The UI never builds, substitutes or
+  previews the dialog text. Creating a keyless connection to a non-loopback URL goes through the
+  same confirmation in main.
+- **Local server connection failures.** A failure (`ProviderErrorKind` `network` or `timeout` for a
+  local provider) says to check that the server is running and that the port matches, because
+  default ports differ by version (for example llama.cpp's). It does not guess a port.
 - **Keyless providers.** The catalog's `acquisition` decides which credential step the provider
   shows. A provider that needs no key shows no key field and no "Add key" step, and its credential
-  entry in the picker is simply the server.
+  entry in the picker is a secretless record (`CredentialRef.kind: 'none'`) that is simply the
+  server and its URL.
 - The always-visible "which key and model is this turn using" indicator reads credential label,
   provider, and model id from `run_started.model` (the turn actually running), and it is the same
   data as the approval card's context line.

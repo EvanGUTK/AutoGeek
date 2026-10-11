@@ -91,6 +91,8 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `too_large` | Exceeds a size cap |
 | `cancelled` | Operation was cancelled |
 | `domain_error` | A failure from an owner's own error taxonomy (`AuthError`, `ProviderError`). The error stays `{ code, message, details? }` (no new `IpcError` variant); `details` is `{ domain: 'auth' \| 'provider', kind: <closed enum from the owner's error type> }`, validated by that channel's own `errorDetails` schema. `message` is the owner's safe constant for that kind. Vendor `detail` text never crosses |
+| `invalid_base_url` | A base URL that cannot be used (unparseable, wrong scheme, embedded credentials, non-loopback `http:` where not allowed) |
+| `base_url_not_editable` | The provider's endpoint is fixed by the catalog |
 | `unknown_key` | Setting key not in the allowlist |
 | `no_longer_pending` | Approval already resolved or its run ended |
 | `unavailable` | Subsystem not ready |
@@ -105,7 +107,7 @@ the codes it can return in addition to the universal `invalid_input`, `unauthori
 | `workspace.*`, `git.*`, `terminal.*` | ag-workspace |
 | `agent.*`, `permissions.*` | ag-agent |
 | `auth.*` | ag-auth |
-| `models.*` | ag-providers |
+| `models.*` (including `models.setBaseUrl`) | ag-providers |
 | `app.*` | ag-foundation |
 
 (Channel classes for a later split of views are in §1.5.)
@@ -125,7 +127,7 @@ declares the channels it uses (`docs/ui-spec.md` §6.3). The classes I am workin
 | `approvals` | subscribe `agent.approvalRequested`/`Resolved`; `permissions.respondApproval`, `listPending` | Small view, structured data only, rendered as inert text |
 | `composer` | `agent.send`, `agent.stop`, `agent.undoRun`, `agent.getRunDiff`, `agent.listRuns`, `agent.replay` | Starts and controls runs |
 | `terminal` | `terminal.*` | Arbitrary execution by design |
-| `settings` | `auth.*`, `models.list`, `permissions.listRules`/`addRule`/`removeRule`/session approvals, `settings.*` | Credentials and policy |
+| `settings` | `auth.*`, `models.list`, `models.setBaseUrl`, `permissions.listRules`/`addRule`/`removeRule`/session approvals, `settings.*` | Credentials and policy |
 | `workspace` | `workspace.*`, `git.*` | Files, trust, folder |
 
 In the single-renderer configuration all classes map to one sender. A class is a label in the channel
@@ -354,7 +356,8 @@ CredentialRef = {          // .strict()
   id: string;              // /^cred_[A-Za-z0-9_-]{22}$/, opaque
   label: string;           // 1–100 chars
   providerId: string;
-  kind: 'api_key' | 'oauth_pkce';
+  kind: 'api_key' | 'oauth_pkce' | 'none';   // 'none' = keyless local server; a secretless record
+  baseUrl?: string;        // display-safe; present only for providers whose endpoint is editable
   createdAt: string;       // ISO datetime
   monthlyCapUsdMicros?: number;
 }
@@ -417,6 +420,33 @@ Renderer behavior and constraints:
   wants one.
 - The picker renders `unknown` honestly (`docs/ui-spec.md` §4.1): never as "no", never as "yes".
 
+### 7.0.1 `models.setBaseUrl` (owner: ag-providers; shape settled with ag-auth, named by them)
+
+A base URL decides where the stored key and the user's code are sent, so it is security-critical and
+**never a renderer setting** (the chief's ruling). It belongs to the credential or provider-config
+record in main, and a stored key is bound to the host it was created with.
+
+- Input: `{ credentialId: string; baseUrl: string }`.
+- Output: `CredentialRef` (with the new display-safe `baseUrl`).
+- Errors: `not_found`, `base_url_not_editable` (hosted providers: anthropic, openai, google,
+  openrouter have fixed catalog URLs), `invalid_base_url` (unparseable, scheme other than
+  `http:`/`https:`, embedded credentials), `user_declined`, plus the provider-domain projection
+  (`domain_error`, `ProviderErrorSafe`).
+- Only `openai_compatible` and the local servers (ollama, lmstudio, llamacpp) are editable. The
+  provider catalog says so with `baseUrl: { editable: false; url } | { editable: true; defaultUrl? }`.
+- Main shows a native confirmation, built by main, at one of two levels: **confirm** for any
+  non-loopback editable target, **loud** for sending a key over plaintext `http:` or an https→http
+  downgrade. The text states that the key and the user's code will be sent to the NEW host, shows old
+  → new through the display-safe function with punycode visible, and warns extra on non-loopback
+  `http:`. **The renderer never builds, substitutes or influences the dialog text.** It shows a
+  "Waiting for confirmation in the system dialog" state and then the result (`user_declined` leaves
+  the URL unchanged and is not an error).
+- Creating a **keyless connection** (`kind: 'none'`) to a non-loopback URL triggers the same native
+  confirm in main. The channel that creates a keyless connection is ag-auth's to name; the renderer
+  only needs it to return a `CredentialRef`.
+- `models.list` is unchanged (`{ credentialId }`). After a successful `setBaseUrl` the UI refreshes
+  `auth.list` and re-requests the model list.
+
 ### 7.1 `app.openExternal`
 Proposed shape, for the chief to relay to ag-foundation's `app.*` domain.
 
@@ -450,6 +480,8 @@ Proposed shape, for the chief to relay to ag-foundation's `app.*` domain.
   `workspace.readFile`/`writeFile` on a protected path, `workspace.setTrust(true)` and
   `permissions.addRule` with effect `allow` (D-010). Refusal is `user_declined`.
 - No channel creates a persistent permission rule as a side effect of an approval.
+- No renderer setting holds a base URL, and the renderer cannot supply or alter a confirmation
+  dialog's text; both belong to main.
 - No generic key/value, "eval", or "forward this to main" channel.
 
 ### 8.2 What the IPC does allow, and why that matters
@@ -525,5 +557,8 @@ as such.
     `ARCHITECTURE.md` §6.
 13. **Terminal water marks and file size defaults** (ag-workspace): 256/64 KiB and 2 MiB default /
     16 MiB hard cap, to be tested and possibly revised there; the renderer takes them as given.
-14. **D-010 isolation proposal** (joint with ag-foundation): starts with M2, decided before M3. §1.5 is
+14. **Base URL channels** (ag-providers and ag-auth, settled; their channel names win): `models.setBaseUrl`
+    as in §7.0.1, the catalog endpoint union, `CredentialRef.kind: 'none'` and `baseUrl`, and the
+    keyless-connection creation channel.
+15. **D-010 isolation proposal** (joint with ag-foundation): starts with M2, decided before M3. §1.5 is
     my input.
