@@ -1,0 +1,11 @@
+node_modules
+dist
+out
+.turbo
+coverage
+pnpm-lock.yaml
+.agents
+ARCHITECTURE.md
+CLAUDE.md
+docs
+scripts
