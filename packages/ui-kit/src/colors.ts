@@ -1,40 +1,42 @@
 /** The two shipped themes. `system` is resolved to one of these by the theme resolver. */
 export type ThemeName = 'dark' | 'light';
 
-/** Every colour token, as `#rrggbb`. Components read these only through CSS custom properties. */
-export interface ColorTokens {
-  /** Surfaces: text sits on these. */
-  readonly bg: string;
-  readonly surface: string;
-  readonly raised: string;
-  readonly overlay: string;
-  readonly selected: string;
-  /** Foreground. */
-  readonly text: string;
-  readonly textMuted: string;
-  readonly textSubtle: string;
-  readonly accent: string;
-  readonly danger: string;
-  readonly warning: string;
-  readonly success: string;
-  readonly info: string;
-  /** Text on a filled accent control, and the accent fill's hover colour. */
-  readonly onAccent: string;
-  readonly accentHover: string;
-  /** Lines. `border` is decorative; `borderStrong` identifies a control and needs 3:1. */
-  readonly border: string;
-  readonly borderStrong: string;
-  readonly focus: string;
-  /**
-   * Hover, pressed and selected+hover states tint the surface with `text`, which lowers contrast.
-   * In those states the status colours and the strong border resolve to these variants instead.
-   */
-  readonly dangerState: string;
-  readonly warningState: string;
-  readonly successState: string;
-  readonly infoState: string;
-  readonly borderStrongState: string;
-}
+/**
+ * Every colour token name, in the order they are emitted. Surfaces come first (text sits on them),
+ * then foreground, the accent fill, lines, and finally the state variants: in hover, pressed and
+ * selected+hover states the status colours and the strong border resolve to the `*State` ones,
+ * because tinting a surface with `text` lowers contrast.
+ */
+export const COLOR_TOKEN_NAMES = [
+  'bg',
+  'surface',
+  'raised',
+  'overlay',
+  'selected',
+  'text',
+  'textMuted',
+  'textSubtle',
+  'accent',
+  'danger',
+  'warning',
+  'success',
+  'info',
+  'onAccent',
+  'accentHover',
+  'border',
+  'borderStrong',
+  'focus',
+  'dangerState',
+  'warningState',
+  'successState',
+  'infoState',
+  'borderStrongState',
+] as const;
+
+export type ColorTokenName = (typeof COLOR_TOKEN_NAMES)[number];
+
+/** Every colour token, as `#rrggbb`. `border` is decorative; `borderStrong` needs 3:1. */
+export type ColorTokens = Readonly<Record<ColorTokenName, string>>;
 
 /** The surfaces a foreground can sit on, in the order the UI spec lists them. */
 export const SURFACE_NAMES = ['bg', 'surface', 'raised', 'overlay', 'selected'] as const;

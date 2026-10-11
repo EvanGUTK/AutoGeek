@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { colorTokens, SURFACE_NAMES, type ColorTokens, type ThemeName } from './colors.ts';
+import {
+  COLOR_TOKEN_NAMES,
+  colorTokens,
+  SURFACE_NAMES,
+  type ColorTokenName,
+  type ThemeName,
+} from './colors.ts';
 import { contrastRatio, mixHex } from './contrast.ts';
 
 const THEMES: readonly ThemeName[] = ['dark', 'light'];
@@ -14,7 +20,7 @@ const TEXT_ON_SURFACES = [
   'warning',
   'success',
   'info',
-] as const satisfies readonly (keyof ColorTokens)[];
+] as const satisfies readonly ColorTokenName[];
 
 /** The minimum contrast the UI spec states for each token over its five surfaces. */
 const STATED_MINIMUM: Record<ThemeName, Record<(typeof TEXT_ON_SURFACES)[number], number>> = {
@@ -40,7 +46,7 @@ const STATED_MINIMUM: Record<ThemeName, Record<(typeof TEXT_ON_SURFACES)[number]
   },
 };
 
-function minimumOverSurfaces(theme: ThemeName, token: keyof ColorTokens): number {
+function minimumOverSurfaces(theme: ThemeName, token: ColorTokenName): number {
   const tokens = colorTokens[theme];
   return Math.min(...SURFACE_NAMES.map((surface) => contrastRatio(tokens[token], tokens[surface])));
 }
@@ -51,6 +57,13 @@ describe('colour tokens', () => {
       expect(value, name).toMatch(/^#[0-9a-f]{6}$/);
     }
   });
+
+  it.each(THEMES)(
+    '%s: defines exactly the tokens in COLOR_TOKEN_NAMES, no more and no fewer',
+    (theme) => {
+      expect(Object.keys(colorTokens[theme]).sort()).toEqual([...COLOR_TOKEN_NAMES].sort());
+    },
+  );
 
   it('has five surfaces, including the selected-row surface', () => {
     expect(SURFACE_NAMES).toEqual(['bg', 'surface', 'raised', 'overlay', 'selected']);
