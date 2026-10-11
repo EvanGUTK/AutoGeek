@@ -89,25 +89,43 @@ Notation: `R` is the trusted root (realpath'd at registration), `outside` is a s
 
 ## 5. TOCTOU and races (open via fd where possible)
 
-The module returns a handle, not just a string: resolve, open with `O_NOFOLLOW` where the platform
-has it, then verify the opened fd's realpath (`/proc/self/fd` on Linux, `fcntl(F_GETPATH)` on macOS,
-`GetFinalPathNameByHandle` on Windows) is still inside `R`. Reads and writes use the fd.
+Design (reviewer W2). Pure Node has no `openat`, and no `fcntl(F_GETPATH)` or
+`GetFinalPathNameByHandle` on an fd, so the mechanism on macOS and Windows is the `dev`/`ino`
+re-check below, not a fallback. A native addon would be a new dependency and needs a chief ruling,
+so it is out of scope.
+
+1. Resolve and contain the path (realpath of the deepest existing ancestor).
+2. Open it: posix uses `O_NOFOLLOW` on the leaf. On win32 `O_NOFOLLOW` is undefined, so the leaf is
+   checked with `lstat` first and reparse points (symlinks, junctions) are rejected.
+3. `fstat(fd)` gives `(dev, ino)`. Then `realpath(path)` and `stat` must give the same `(dev, ino)`
+   and a realpath still inside `R`. A swap of any intermediate directory to a symlink pointing
+   elsewhere makes the second resolution land on a different inode and is rejected.
+4. On Linux the module additionally compares `readlink(/proc/self/fd/N)` with the contained path.
+5. Reads and writes use the fd, so a later swap of the path does not matter.
+
+Residual window, documented in `docs/SECURITY.md`: between step 3 and the end of the operation a
+hard link or bind mount cannot be detected by path; writes are atomic renames that replace a link
+rather than writing through it.
+
+Determinism (reviewer W9). The fs port takes an injected test seam with named hooks
+(`beforeOpen`, `afterOpen`, `beforeRename`, `beforeUnlink`, `afterMkdir`). Rows 5.1, 5.2, 5.5, 5.7
+and 5.8 perform their swap inside the hook, so they are deterministic. The 10k-iteration stress
+test (5.9) is a supplement only. The seam is absent in production builds (the hooks default to
+no-ops and are not reachable from IPC).
 
 | # | Scenario | Expected |
 |---|---|---|
-| 5.1 | after the check, the leaf is swapped for a symlink to `outside` before open | `O_NOFOLLOW` open fails (`ELOOP`); reject `symlink_escape` |
-| 5.2 | after the check, an intermediate directory is replaced by a symlink to `outside` | post-open fd realpath is outside `R`; reject, nothing read or written |
+| 5.1 | in `beforeOpen`, the leaf is swapped for a symlink to `outside` | posix: `O_NOFOLLOW` open fails (`ELOOP`); win32: the `lstat` reparse-point check rejects it. Reject `symlink_escape` |
+| 5.2 | in `beforeOpen`/`afterOpen`, an intermediate directory is replaced by a symlink to `outside` | the `(dev, ino)` re-check fails or the realpath is outside `R`; reject, nothing read or written |
 | 5.3 | swap happens between open and read | fd is already bound to the original inode; reads come from it, not the new path |
 | 5.4 | atomic write: temp file created in the target directory, then `rename` | temp name is unpredictable, created `O_EXCL`; a pre-placed symlink at the temp name fails |
-| 5.5 | rename destination swapped for a symlink to `outside` before rename | `rename` replaces the link itself and never follows it; the target is untouched |
+| 5.5 | in `beforeRename`, the rename destination is swapped for a symlink to `outside` | `rename` replaces the link itself and never follows it; the target is untouched |
 | 5.6 | concurrent writes to the same file | each is atomic; the final content equals exactly one writer's content |
-| 5.7 | delete races with a replace by a directory | reject `not_a_file`, nothing recursive happens |
-| 5.8 | `mkdir -p` style parent creation racing with a symlink swap | create one component at a time with `mkdir` and re-verify containment after each |
+| 5.7 | in `beforeUnlink`, the file is replaced by a directory | reject `not_a_file`, nothing recursive happens |
+| 5.8 | in `afterMkdir`, the just-created component is swapped for a symlink | create one component at a time with `mkdir` and re-verify containment after each |
 | 5.9 | stress test: a loop thread flips a path between a regular file and a symlink to `outside` while the module reads it 10k times | the outside file's content is never returned |
 | 5.10 | abort during resolution | `AbortSignal` honored; the fd is closed; no leak |
-
-Platforms without a reliable fd-to-path call fall back to a re-check immediately after open and are
-documented as weaker in `docs/SECURITY.md`; tests assert the fallback path is exercised.
+| 5.11 | mechanism per platform | a test asserts which steps ran: the `(dev, ino)` re-check on every platform, `/proc/self/fd` also on Linux, the `lstat` reparse check on win32 |
 
 ## 6. Multiple roots and trust
 
@@ -118,7 +136,7 @@ documented as weaker in `docs/SECURITY.md`; tests assert the fallback path is ex
 | 6.3 | path inside an untrusted root | allow for the user-initiated fs service; tools reject `untrusted_workspace` |
 | 6.4 | root removed while a handle is open | subsequent calls reject `root_unavailable` |
 | 6.5 | root that is a symlink at registration | stored as its realpath; the original spelling is kept for display only |
-| 6.6 | root is `/` or the user's home directory | reject at registration (`root_too_broad`) |
+| 6.6 | root is `/`, a filesystem root (`C:\\`), the user's home directory, any ANCESTOR of the home directory (`/Users`, `C:\\Users`), or any ancestor of AutoGeek's `userData` directory | reject at registration (`root_too_broad`), since such a root contains `~/.ssh` and the credential store |
 | 6.7 | root does not exist or is a file | reject at registration |
 | 6.8 | untrusted root: FS `list`/`read`/`write` (restricted mode, chief ruling) | allowed, with containment, symlink, sensitive and `protected_path` rules enforced in full |
 | 6.9 | untrusted root: git service, `GitRunner`, PTY service | each refuses with `untrusted_workspace` at the service level (defense in depth; main also checks per channel) |
@@ -137,10 +155,12 @@ results (content of sensitive files is excluded from search output unless approv
 | 7.1 | `.env`, `.env.local`, `.env.production`, `.env.example` | `env_file` (the `.example` family is `env_template`: approval is still required to write, reads are allowed) |
 | 7.2 | `sub/dir/.env` | `env_file` (any depth) |
 | 7.3 | `.envrc` | `env_file` |
-| 7.4 | `.git/config` | `git_config` |
+| 7.4 | `.git/config` | `git_config` (`confirm`, `elevated`) |
+| 7.4b | a FILE named `.git` at any depth (a gitlink containing `gitdir: <path>`, which redirects hooks and config to another git dir) | `git_config` (`confirm`, `elevated`); reads are ordinary |
 | 7.5 | `.git/hooks/pre-commit` (any hook) | `git_hook` (a write is code execution) |
-| 7.6 | `.git/HEAD`, `.git/index`, `.git/objects/**` | `git_internal` (write denied outright; the git service is the only writer) |
-| 7.7 | `.gitmodules`, `.gitattributes` with filter drivers | `git_config` for writes |
+| 7.6 | everything else under `.git/` (`HEAD`, `index`, `objects/**`, `refs/**`, `packed-refs`, `logs/**`, `FETCH_HEAD`, `shallow`, `info/grafts`, `modules/**` other than the allowlist, `worktrees/**` other than the allowlist) | `git_internal`, `deny` (`protected_path`): DEFAULT DENY under `.git/` with an explicit confirm allowlist (7.6b); the git service is the only writer |
+| 7.6b | the `.git/` confirm allowlist: `.git/config`, `.git/hooks/**`, `.git/info/exclude`, `.git/info/attributes`, `.git/modules/*/config`, `.git/modules/*/hooks/**`, `.git/worktrees/*/config.worktree` | `confirm` + `elevated` (fail closed per L-003: a new git file defaults to `deny`) |
+| 7.7 | `.gitmodules`, `.gitattributes` | `git_config` for writes, always (a path-only classifier cannot tell whether a filter driver is defined, so it does not try) |
 | 7.8 | `id_rsa`, `id_ed25519`, `id_ecdsa`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.keystore`, `*.jks` | `private_key` |
 | 7.9 | `.ssh/**`, `.gnupg/**` | `credential_dir` |
 | 7.10 | `.aws/credentials`, `.aws/config` | `credential_file` |
@@ -161,34 +181,45 @@ results (content of sensitive files is excluded from search output unless approv
 
 ## 7a. Code-execution vectors (`exec_vector`, chief addition)
 
-Writing to these files can make a later build, commit, shell, or editor action run attacker-chosen
-code, so a write is as dangerous as running a command. Classifier rule: category `exec_vector`,
-`elevated: true`. Consequences for the permissions owner: a write is never session-grantable and
-always shows a diff prompt. Reads are ordinary. Each entry carries a one-line rationale for
-ag-reviewer. Matching is case- and Unicode-insensitive and applies at any depth unless anchored.
+**Elevation rule (reviewer W1).** A path is `elevated` when a write to it can make attacker-chosen
+code run on an action the user does not perceive as running that file: a git command, `cd` or shell
+start, opening an editor, an install or lifecycle step, starting an agent or MCP server, or CI.
+Every row below is checked against this rule. `conftest.py`, `tox.ini`, `noxfile.py`, `vitest.setup.*`,
+`jest.setup.*`, `*.config.{js,ts,...}` and `.eslintrc.*` are NOT elevated: the user runs the test or
+lint command and expects project code to run. The one named exception is 7a.9 (build entry points
+such as `Makefile` and `package.json` scripts), elevated by chief ruling because the agent runs them
+by name and the approval prompt shows `make test`, not the recipe. If the chief extends that
+reasoning to test and lint configs, they move in as one change.
+
+Writing to these files is therefore as dangerous as running a command. Classifier rule: category
+`exec_vector`, `elevated: true`. Consequences for the permissions owner: a write is never
+session-grantable and always shows a diff prompt. Reads are ordinary. Each entry carries a one-line
+rationale for ag-reviewer. Matching is case- and Unicode-insensitive and applies at any depth unless
+anchored.
 
 | # | Path (relative to the root) | Rationale |
 |---|---|---|
-| 7a.1 | `.git/**` (hooks, config, `info/attributes`, `info/exclude`) | hooks and config keys run code on the next git command; anchored at the root and at any nested repo |
+| 7a.1 | `.git/**` allowlist from 7.6b, plus a FILE named `.git` (7.4b) | hooks and config keys run code on the next git command; anchored at the root and at any nested repo |
 | 7a.2 | `.gitmodules`, `.gitattributes` | submodule URLs and filter drivers run commands on checkout/add |
 | 7a.3 | `.github/workflows/**`, `.github/actions/**` | CI runs with repository secrets |
 | 7a.4 | `.husky/**`, `.githooks/**`, `lefthook.yml`, `.pre-commit-config.yaml`, `.lintstagedrc*` | git hook managers run on commit |
 | 7a.5 | `.envrc` | direnv executes it on `cd` |
 | 7a.6 | shell rc/profile files: `.bashrc`, `.bash_profile`, `.bash_login`, `.profile`, `.zshrc`, `.zshenv`, `.zprofile`, `.zlogin`, `.config/fish/**`, `.inputrc` | run on the next shell start (only when a root contains a home directory, but matched by name) |
-| 7a.7 | `.vscode/{tasks,settings,launch}.json`, `.devcontainer/**` | editor tasks, debugger launch commands, dev container lifecycle commands |
+| 7a.7 | `.vscode/{tasks,settings,launch,mcp}.json`, `.devcontainer/**`, `.exrc`, `.nvimrc`, `.nvim.lua`, `.dir-locals.el`, `.zed/tasks.json` | editor tasks, debugger launch commands, workspace MCP servers, vim/neovim `exrc` and Emacs `eval` on open, dev container lifecycle commands |
 | 7a.8 | `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `.travis.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, `.buildkite/**`, `.drone.yml` | other CI configs, same as 7a.3 |
-| 7a.9 | `Makefile`, `GNUmakefile`, `justfile`, `Taskfile.yml`, `package.json`, `pnpm-workspace.yaml` (scripts and lifecycle hooks), `.npmrc`, `.yarnrc*`, `.pnpmfile.cjs` | build and install commands run by routine tooling; `package.json` is also edited constantly, so the prompt is a diff prompt and not a block |
+| 7a.9 | `Makefile`, `GNUmakefile`, `justfile`, `Taskfile.yml`, `package.json`, `pnpm-workspace.yaml` (scripts and lifecycle hooks), `.npmrc`, `.yarnrc*`, `.pnpmfile.cjs`, `bunfig.toml` | named exception to the rule (see above): build and install commands run by routine tooling; `bunfig.toml` `preload` runs on `bun run`. `package.json` is also edited constantly, so the prompt is a diff prompt and not a block |
+| 7a.9b | lockfiles and manifests of installers that run scripts: `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock*`, `Gemfile`, `Gemfile.lock`, `*.gemspec`, `requirements*.txt`, `Pipfile`, `Pipfile.lock`, `poetry.lock`, `uv.lock` | rewriting a resolved tarball URL or integrity makes the next `install` run attacker lifecycle scripts (reviewer W1); an install is an action the user does not read as running project code |
 | 7a.10 | `Dockerfile*`, `docker-compose*.yml`, `compose*.yaml` | build and run commands |
-| 7a.11 | `conftest.py`, `setup.py`, `pyproject.toml` build hooks, `tox.ini`, `noxfile.py` | executed by test runners and installers (`conftest.py` and `setup.py` execute on collection and install) |
+| 7a.11 | `setup.py`, `pyproject.toml`, `setup.cfg` | executed by installers and build backends (`pip install`, `uv sync`); `conftest.py`, `tox.ini` and `noxfile.py` are not here, see the rule |
 | 7a.12 | `*.sh` with the executable bit set | an executable script is a command waiting to run; write and chmod both |
-| 7a.13 | `.claude/**`, `.cursor/**`, `AGENTS.md`, `AUTOGEEK.md`, `CLAUDE.md`, `.mcp.json`, `.autogeek/mcp*.json` | agent configuration and MCP server definitions spawn processes and widen agent behavior. `AUTOGEEK.md` and `AGENTS.md` are prompt-injection surfaces, so elevated writes, ordinary reads (revises 7.16 for writes) |
+| 7a.13 | `.claude/**`, `.cursor/**`, `.cursorrules`, `.gemini/**`, `.continue/**`, `.codex/**`, `AGENTS.md`, `AUTOGEEK.md`, `CLAUDE.md`, `.mcp.json`, `.autogeek/mcp*.json` | agent configuration and MCP server definitions spawn processes and widen agent behavior. `AUTOGEEK.md` and `AGENTS.md` are prompt-injection surfaces, so elevated writes, ordinary reads (revises 7.16 for writes) |
 | 7a.14 | `.cargo/config*`, `build.rs`, `rust-toolchain*`, `.bazelrc`, `WORKSPACE`, `BUILD*` | build scripts and runner overrides |
 | 7a.15 | `.gradle/**`, `gradle.properties`, `build.gradle*`, `settings.gradle*`, `pom.xml`, `.mvn/**` | build plugins run code |
 | 7a.16 | `.env*` | already `env_file`; listed to note that `env_file` is also elevated for writes |
 | 7a.17 | any symlink whose realpath lands on a row above | classified on the target (same as 7.21) |
 | 7a.18 | the same names in a different case or NFD form | matched (same as 7.20) |
 | 7a.19 | `docs/Makefile.md`, `src/makefile-utils.ts`, `husky.ts` | not matched: the rules are anchored to the whole basename or path, no substring or prefix matching |
-| 7a.20 | writes under `node_modules/**` and `.venv/**` | `elevated` (chief ruling): installed dependencies are executed code and an agent has no business editing them; reads are ordinary. `dist/**`, `target/**` and other build output stay non-elevated |
+| 7a.20 | writes under `node_modules/**`, `.venv/**`, `venv/**`, `.tox/**`, `.nox/**`, `__pypackages__/**`, and any `*.pth` file |  `elevated` (chief ruling, venv names per reviewer W1): installed dependencies are executed code and an agent has no business editing them; a `*.pth` file runs on every Python start; reads are ordinary. `dist/**`, `target/**` and other build output stay non-elevated |
 
 Chief rulings: 7a.9 and 7a.13 stay elevated (a diff prompt per edit, no session grant, is the
 accepted cost; 7a.13 is elevated for writes and ordinary for reads). Rows whose rationale is not
@@ -208,6 +239,17 @@ are `confirm` for the editor and `elevated` for tools, `.git/{HEAD,index,objects
 for both, and every §7a row is `elevated`. One table drives both, tested by a consistency check
 that every §7 and §7a row has an explicit `access` and `elevated` value.
 
+### Precedence when a path matches several rows (reviewer W4)
+
+Many paths match more than one row (`.npmrc` is 7.11 and 7a.9, `.envrc` is 7.3 and 7a.5,
+`.git/config` is 7.4 and 7a.1, `.gitmodules` is 7.7 and 7a.2, `.vscode/*` is 7.17 and 7a.7). The
+rule: `access` is the most restrictive match (`deny` over `confirm` over `free`); `elevated` is the
+OR of all matches; `category` is the first match in this fixed order: `autogeek_internal`,
+`git_internal`, `git_config`/`git_hook`, `private_key`, `credential_dir`, `credential_file`,
+`env_file`, `exec_vector`, `env_template`. A test enumerates every multi-match path in the rule
+data and asserts the combined result, alongside the check that each row has an explicit `access`
+and `elevated`.
+
 The classifier is a pure function of `(canonicalRelativePath)` with a data-driven rule list, so the
 permissions package can show the matched rule in the approval prompt.
 
@@ -221,6 +263,7 @@ permissions package can show the matched rule in the approval prompt.
 | 8.4 | property test: for random sequences of `..`, `.`, `/`, names, and generated symlinks, a path that the module allows always has a realpath with root as a segment-wise prefix | all |
 | 8.5 | property test: allow/deny decision is stable under adding redundant `./` and `//` | all |
 | 8.6 | the same table runs on macOS and Linux in CI; win32-only rows run lexically on all platforms and fully on a Windows runner when one exists | all |
+| 8.7 | the wire path schema in `core` and the main-side resolver run the same §1–§2 cases; every path the schema accepts must be handled by the resolver, and the schema is never looser than the resolver (chief ruling) | all |
 
 ## 9. GitRunner hardening (hostile repository)
 
@@ -250,7 +293,6 @@ hostile repository in a temp dir, each with a sentinel file the payload would cr
 | 9.14 | caller passes an argument beginning with `-` as a ref or path | refused unless the runner builds it; paths follow `--` |
 | 9.15 | output cap and timeout; abort kills the process group | typed errors; no orphan processes |
 | 9.16 | env dump test: spawn a probe through the same env builder | contains no AutoGeek credential variables |
-| 8.7 | the wire path schema in `core` and the main-side resolver run the same §1–§2 cases; every path the schema accepts must be handled by the resolver, and the schema is never looser than the resolver (chief ruling) | all |
 
 ## 10. Approved constants (named, each with a test)
 
@@ -292,15 +334,15 @@ behavior wins and the case says so.
 | 11.12b | input caps exceeded: rule file over 1 MiB, more than 10,000 rules per file, a line over 4 KiB, a path deeper than 128 segments, more than 1,000 rule files in one walk | the matcher returns typed error `ignore_limit_exceeded` naming the cap; never a hang, never a silent truncation. Consumers decide, each fail-closed (see 11.12c) |
 | 11.12c | consumer behavior on `ignore_limit_exceeded` | `listDir` (display only) still succeeds: every entry gets `ignored: 'unknown'` and the output carries `ignoreRules: 'limit_exceeded'`, so the user can still browse a hostile folder and nothing is guessed (ag-ui's shape, accepted). `glob`/`grep`/agent tools return the typed error (an agent must not search on guessed rules). The watcher falls back to its fixed built-in excludes (`.git`, `node_modules`) and emits a degraded-state event, never an unbounded watch |
 | 11.13 | pathological patterns (`*` repeated thousands of times, `a*a*a*a*b` on `aaaa...`, deeply nested `**`) | linear time by construction: patterns compile to a segment matcher run as a greedy two-pointer / NFA simulation with no backtracking and no `RegExp`. A fast-check test generates adversarial patterns and paths and asserts a wall-time bound and that the match count of steps is at most `O(pattern length * path length)` |
-| 11.14 | case-insensitive volume (macOS) | pattern matching is case-sensitive as in git's default `core.ignorecase=false`; documented. On case-insensitive volumes the matcher uses the on-disk name, not the requested spelling |
+| 11.14 | case-insensitive volume (macOS) | the matcher folds case when the root's case-sensitivity probe (4.7) says the volume is case-insensitive, which is what git does there (`git init`/`clone` sets `core.ignorecase=true`); on case-sensitive volumes it is case-sensitive. The fold is ASCII-only, matching git's own folding, and it never reads git config (D1). The matcher uses the on-disk name, not the requested spelling (reviewer W8) |
 | 11.15 | NFC vs NFD names | compared on the on-disk name, byte-exact; documented as git's behavior |
-| 11.16 | `listDir` of `.git` itself | listed but flagged ignored; never expanded by the tree watcher |
+| 11.16 | `listDir` of `.git` itself | listed but flagged ignored; never expanded by the tree watcher. This is a display rule, not a gitignore rule, so `.git` is excluded from the differential corpus |
 | 11.17 | `ignored` entries are still listed (flag only), while `glob`/`grep`/the watcher skip ignored paths by default | tested per consumer |
-| 11.18 | a sensitive file that is also gitignored (`.env`) | `ignored: true`, still `sensitive`; ignoring never lowers sensitivity |
-| 11.19 | differential test against `git check-ignore --no-index -v --stdin -z`, run INSIDE `pnpm verify` (not an optional job), through the hardened `GitRunner` on a fixture repo the test creates itself (no hostile config). Corpus: negation, anchoring, directory-only, escapes, `**`, trailing spaces, CRLF, BOM, nested `.gitignore` precedence, `.git/info/exclude`, and a case-insensitive volume (a temp dir on a case-insensitive filesystem when available, else `core.ignorecase=true` fixtures). If the `git` binary is missing the test FAILS LOUDLY with a typed error; there is no skip | matcher decisions equal git's on every corpus item, except the documented divergences below |
+| 11.18 | a sensitive file that is also gitignored (`.env`) | `ignored: 'yes'`, still `sensitive`; ignoring never lowers sensitivity |
+| 11.19 | differential test against `git check-ignore --no-index -v --stdin -z`, run INSIDE `pnpm verify` (not an optional job), through the hardened `GitRunner` on a fixture repo the test creates itself (no hostile config). Corpus: negation, anchoring, directory-only, escapes, `**`, trailing spaces, CRLF, BOM, nested `.gitignore` precedence, `.git/info/exclude`, and case folding (the test passes `core.ignorecase` equal to what the probe reports for its temp dir, and a second run forces `core.ignorecase=true` with the matcher's folding forced on, so both modes are covered on any CI filesystem). If the `git` binary is missing the test FAILS LOUDLY with a typed error; there is no skip | matcher decisions equal git's on every corpus item, except the documented divergences below |
 | 11.20 | invariant: `ignored` is COSMETIC ONLY (chief). It never feeds permission decisions, the sensitive/exec-vector classifier, containment checks, or what the agent may read. Structural test: the classifier, containment and gate-request builders have no ignore-state parameter (the type system enforces it), and a table test shows an identical classification, `access` and `elevated` for the same path whether the matcher says `yes`, `no` or `unknown` | the invariant is stated in the matcher's header comment and tested |
 | 11.21 | `read_file` / `write_file` on an ignored path | behave exactly as for a non-ignored path (same gate request, same checks). `glob`/`grep` skip ignored paths by default only as a search-scope convenience; an explicit `read_file` of that path still works, and `grep` has an explicit include-ignored option that goes through the gate like any read |
-| 11.22 | `listDir` output bound (always, not only when degraded): at most `LIST_DIR_MAX_ENTRIES` = 5,000 entries (named constant, tested), dirs first then name order; beyond it the output sets `truncated: true` and `totalKnown` is omitted. A directory of millions of entries is read with a streaming `opendir` iterator and stops after the cap plus one, so memory and time stay bounded | the renderer is never flooded; the UI shows "showing first 5,000 entries" |
+| 11.22 | `listDir` output bound (always, not only when degraded): at most `LIST_DIR_MAX_ENTRIES` = 5,000 entries (named constant, tested), beyond it the output sets `truncated: true` and `totalKnown` is omitted. When the directory is under the cap the entries are sorted dirs first then by name; when truncated they are the first entries in filesystem order (sorted dirs first within that page), because a global sort would need the whole listing. A directory of millions of entries is read with a streaming `opendir` iterator and stops after the cap plus one, so memory and time stay bounded | the renderer is never flooded; the UI shows "Showing 5,000 of more entries" |
 | 11.23 | the degraded `listDir` (`ignoreRules: 'limit_exceeded'`) is bounded by the same cap, tested with a hostile folder holding more than the cap and an oversized `.gitignore` | `truncated: true` and `ignored: 'unknown'` on every returned entry |
 
 ### Known divergences from git (each an explicit decision)
@@ -318,8 +360,9 @@ to exclude it.
 ## 12. Watcher state event
 
 Event `workspace.fsWatchState` (main to renderer, no per-file data; payload validated by zod in
-`core`): `{ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' }`.
-Sent on every transition and once when a window subscribes. `workspace.fsChanged` keeps its shape.
+`core`): `WatchState = { seq: number } & ({ state: 'ok' } | { state: 'degraded'; reason: 'ignore_rules_limit' | 'watch_limit' | 'overflow' | 'watch_error' })`.
+Sent on every emitted transition; `workspace.getState` returns `{ root, watch: WatchState }` for re-sync
+(see 12.8). `workspace.fsChanged` keeps its shape.
 
 | # | Scenario | Expected |
 |---|---|---|
