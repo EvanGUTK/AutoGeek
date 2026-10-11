@@ -69,6 +69,18 @@ ADR-style log. Newest at the bottom. Format: `## D-NNN title` — Status, Contex
   tool conformance harness (fake gate asserting `check` precedes any mutation) and loop-side
   detection of write/exec/network tools completing without a recorded allow.
 
+## D-007 API keys are entered in the renderer, write-only; main-owned entry deferred to M5
+- **Status:** accepted (chief, 2026-10-11; proposed by ag-auth)
+- **Context:** The user types an API key into the settings UI, which runs in the untrusted
+  renderer. The alternative is a separate main-owned input window that the renderer never sees.
+- **Decision:** The renderer sends the key to main once through `auth.addApiKey` /
+  `auth.rotateApiKey` and clears the input after submit. No channel ever returns secret material
+  to the renderer: it receives only `CredentialRef`s and typed results.
+- **Consequences:** A compromised renderer could capture keys as the user types them, so this
+  residual risk depends on the renderer's CSP and markdown sanitization (ag-ui) and on D-010's
+  isolation work. ag-auth records it in the credentials section of `docs/SECURITY.md` once that
+  document exists. Main-owned key entry is an M5 hardening item.
+
 ## D-010 Renderer trust model: harden now, isolate before agent mode ships
 - **Status:** accepted (chief, 2026-10-11; raised by ag-reviewer in the ag-ui docs review)
 - **Context:** One renderer both displays untrusted model output and holds privileged capabilities
