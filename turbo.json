@@ -13,12 +13,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": []
-    },
-    "@autogeek/tooling#test": {
-      "cache": false
-    },
-    "@autogeek/core#test": {
+      "outputs": [],
       "cache": false
     },
     "dev": {

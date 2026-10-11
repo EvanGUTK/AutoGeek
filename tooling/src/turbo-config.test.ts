@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { findOutsideReadsInTests, listWorkspaceDirectories } from './package-policy.ts';
+import { listWorkspaceDirectories } from './package-policy.ts';
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -51,22 +51,23 @@ describe('turbo cache configuration', () => {
     expect(task?.resolvedTaskDefinition.cache).toBe(false);
   });
 
-  it('never caches the test task of any package whose tests read outside it (review K2)', async () => {
+  it('never caches the test task of ANY package (review D1): a cached test can replay a stale green', async () => {
+    // Detecting which tests read state outside their package only catches the idioms we thought
+    // of (?raw imports, import attributes, import.meta.glob, createRequire, ...). Not replaying
+    // test results at all is the rule that cannot be bypassed.
     const root = fileURLToPath(new URL('../../', import.meta.url));
-    const flagged: string[] = [];
-    for (const dir of await listWorkspaceDirectories(root)) {
-      if ((await findOutsideReadsInTests(root, dir)).length > 0) {
-        flagged.push(`@autogeek/${dir.split('/').pop() ?? dir}#test`);
-      }
-    }
-    // Both known cases must be detected, or the check itself is blind.
-    expect(flagged).toEqual(
-      expect.arrayContaining(['@autogeek/tooling#test', '@autogeek/core#test']),
-    );
+    const directories = await listWorkspaceDirectories(root);
+    expect(directories.length).toBeGreaterThanOrEqual(10);
     const json = await turbo(['run', 'test', '--dry=json']);
     const dryRun = DryRun.parse(JSON.parse(json.slice(json.indexOf('{'))));
-    for (const taskId of flagged) {
-      const task = dryRun.tasks.find((t) => t.taskId === taskId);
+    const taskIds = dryRun.tasks.map((task) => task.taskId);
+    for (const dir of directories) {
+      const taskId = `@autogeek/${dir.split('/').pop() ?? dir}#test`;
+      const task = dryRun.tasks.find((candidate) => candidate.taskId === taskId);
+      expect(
+        task,
+        `${taskId} is not in the turbo graph (have: ${taskIds.join(', ')})`,
+      ).toBeDefined();
       expect(task?.resolvedTaskDefinition.cache, `${taskId} must be uncached`).toBe(false);
     }
   });
