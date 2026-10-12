@@ -210,12 +210,17 @@ interface ModelInfo {
   contextWindow: number | null;      // null = unknown
   maxOutputTokens: number | null;
   capabilities: { tools: Support; vision: Support; reasoning: Support; promptCaching: Support };
-  pricing?: {                        // USD per 1M tokens; absent = unknown (spend caps then warn, not compute)
+  pricing?: {                        // integer USD micros per 1M tokens ($3.00 = 3_000_000); never floats.
+                                     // absent = unknown (spend caps then warn, not compute)
     input: number; output: number; cacheRead?: number; cacheWrite?: number;
   };
   source: 'api' | 'catalog' | 'default';  // where the data came from (the UI can show "estimated")
 }
 ```
+
+Cost is computed per usage event with integer (BigInt) math as
+`ceil(tokens * priceMicrosPer1M / 1_000_000)` micro-USD, rounded UP so spend caps over-count rather
+than under-count. See the doc comment on `ModelInfoSchema` in `packages/core/src/model/info.ts`.
 
 `@autogeek/providers` will also export `effectiveLimits(info)`, giving conservative numbers for
 unknowns: context 8_192 and max output 4_096. That keeps the loop and compaction safe on unknown
