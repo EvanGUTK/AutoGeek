@@ -157,3 +157,26 @@ Next foundation slices (in order): model-contract review → smoke tooling → I
 
 ## 10. Pause status
 All seven agents (foundation, auth, agent, providers, workspace, ui, reviewer) have reported clean stopping points. Nothing is red on any pushed branch the agents certified; the two known-unverified refs are `agent/providers/wip-ollama` (3 red conformance tests) and `agent/foundation/wip-smoke-boundaries` (WIP). **Chief's resume checklist (decisions to make first):** confirm the ag-agent/ag-foundation schema split (recommend approve); approve ag-agent's backstop bounds (recommend approve); fix `docs/model-contract.md` §5 pricing to integer micros; merge ag-workspace docs-r5 to 2bc7ba0 (rebase + range-diff); then ask foundation to rebase + request review of model-contract and tell ag-providers a per-commit forced sweep is required before its review request.
+
+## 11. Second pause (2026-10-12, user request) — all seven agents stopped clean
+
+Resumed 2026-10-12 (main 9b01755 = pricing doc fix), then the user paused again. Every agent is idle with a clean
+tree and waits for RESUME. **Capacity lesson:** parallel forced verifies drove machine load to ~93 and the system
+low-memory reaper killed ag-foundation's per-commit loop. On resume: ONE heavy verify at a time per agent, and the
+reviewer runs its verifies serially.
+
+| Agent | State at pause |
+|---|---|
+| foundation | `model-contract` rebased locally at f8c9609 (6 commits, range-diff all `=` vs db4d91d). Forced verify green at commit 1 only; commits 2-6 UNVERIFIED on the new base (loop was reaped). NOT pushed (origin = old db4d91d), review NOT requested. ag-providers and ag-agent still blocked on it. Also: smoke-tooling c0e4942, wip-smoke-boundaries fe82caa (unverified WIP). |
+| reviewer | Verifies stopped; no new verdicts. model-contract f8c9609: review done, 4 minors, no blocker, APPROVE expected once commits 2-6 verify green; one minor makes binding ModelProvider to ResolvedCredential a condition of the core-credentials review. ui-kit-tokens ed04f6b: likely CHANGES_REQUESTED (forced-colors: selected rows ~1.5-1.9:1, focus Highlight on Highlight fill 1:1), verify unfinished. Not started: core-credentials (held for its final head), path-security eb28422, docs-r6 e7becb8, agent/loop. Notes in `.agents/reviews/*-progress.md`. |
+| auth | AuthError commit LANDED: `agent/auth/core-credentials-r2` @ 1021cef (rebased on 9b01755, forced verify green, mutation-checked 8/8, doc-drift canary), pushed without force. Old `agent/auth/core-credentials` still pre-rebase 6e3e6ce (lease-force needed). Not done: DECISIONS entry "credential record is the provider connection" (D-014 proposed; D-009 is unused: chief to decide if the gap is deliberate), review request, store rebase, deleting `agent/auth/vault`. |
+| agent | `agent/agent/loop` local @ 68c9e1e (rebased on 9b01755, forced verify green): 1a-core plan (f249318) + Task 0 EnvKeyClassifier port. UNPUSHED (origin 179b3d0; needs lease-force), unreviewed. Split + backstop bounds approved by the chief 2026-10-12. Next: Task 0a/0b, per-commit sweep, push with lease, request 1a-core review. |
+| providers | `adapters` @ 2dfcf8d pushed, green at head only (per-commit forced sweep owed, never started). `wip-ollama` @ b8036f2 LOCAL, unverified: red-socket cause proven (idle undici pool connections), fixed test-side, Ollama conformance 17/17; 1 of 16 request unit tests red (not investigated); stream/provider unit tests, index export, atomic split not started. |
+| workspace | docs-r5 @ 182fac0 (2 reviewed commits = 46cde1f, 2bc7ba0) READY TO MERGE on 9b01755; chief checked ancestry, range-diff (`=`), scope; independent forced verify was not finished (stopped for memory). NOT merged (paused). docs-r6 e7becb8 (nit) and path-security eb28422 in the review queue. New: `path-realpath` @ 88c2f51 (stacked on path-security, forced verify green 10/10, tests NOT mutation-checked yet), no review requested. |
+| ui | `ui-kit-tokens` @ ed04f6b (7 commits on 9b01755, forced verify green at head, review requested, see reviewer). `spec-identity-2` @ cd55435 still on old base. DOM test-environment write-up delivered (recommendation: jsdom 30.1.2 + Testing Library + jest-axe for the verify gate, later a Vitest-browser tier; needs engines >=24.15); decisions (a) tier-1 deps, (b) engines bump, (c) browser-binary policy owner, (d) React 19 are DEFERRED to the chief; nothing installed. |
+
+**Chief resume checklist (updated):** (1) tell all agents: one heavy verify at a time; (2) foundation finishes forced verify of
+model-contract commits 2-6 serially, pushes with lease, requests review; (3) merge workspace docs-r5 @ 182fac0 after a clean
+forced verify; (4) answer ag-auth's decision numbering (D-014 vs D-009 gap); (5) answer ag-ui's DOM-environment questions
+(a)-(d); (6) providers: investigate the red request unit test, per-commit sweep before review; (7) consider a second
+reviewer (3 code slices waiting).
