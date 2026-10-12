@@ -10,7 +10,7 @@ import type { JsonValue } from './json.ts';
  * boundary, never replaced by it:
  * - `ProviderError`: kind `aborted` -> `cancelled`, `timeout` -> `timeout`, anything unexpected
  *   -> `internal`. The owning package decides the rest of its table and tests it.
- * - Auth/vault failures -> `secure_storage_unavailable` or `internal` as appropriate.
+ * - `AuthError`: the total table `AUTH_ERROR_PROJECTION` in auth-error.ts.
  * Vendor text, file contents, key material and `ProviderError.detail` never cross.
  *
  * `details: { domain, kind }` may accompany any code where the UI needs the owner's specific

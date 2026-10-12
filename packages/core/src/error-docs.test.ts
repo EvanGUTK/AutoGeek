@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { AUTH_ERROR_PROJECTION } from './auth-error.ts';
 import { ERROR_CODES } from './errors.ts';
 
 // The approved contract docs are the source of truth for which error names exist. These tests read
@@ -100,5 +101,28 @@ describe('ErrorCode against the approved docs', () => {
 
   it('keeps the workspace-internal reasons out of ErrorCode', () => {
     expect([...WORKSPACE_PATH_REASONS].filter((reason) => known.has(reason))).toEqual([]);
+  });
+});
+
+describe('AuthError projection against the approved docs', () => {
+  it('matches the AuthError table in docs/ipc-channels.md §6 row for row', async () => {
+    const doc = await read('ipc-channels.md');
+    const start = doc.indexOf('| AuthError kind | Crosses as |');
+    expect(start).toBeGreaterThan(0);
+    const rows = doc.slice(start).split('\n').slice(2);
+    const table = rows.slice(
+      0,
+      rows.findIndex((row) => !row.startsWith('|')),
+    );
+    const documented: Record<string, string> = {};
+    for (const row of table) {
+      const [kinds = '', target = ''] = row.split('|').slice(1);
+      for (const kind of names(kinds)) {
+        documented[kind] = target.includes('the same universal code')
+          ? kind
+          : (names(target)[0] ?? '');
+      }
+    }
+    expect(documented).toEqual(AUTH_ERROR_PROJECTION);
   });
 });

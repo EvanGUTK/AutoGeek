@@ -1,5 +1,20 @@
 export { abortReason } from './abort.ts';
 export {
+  AUTH_DOMAIN_KINDS,
+  AUTH_ERROR_CODES,
+  AUTH_ERROR_KINDS,
+  AUTH_ERROR_PROJECTION,
+  AUTH_STORAGE_KINDS,
+  AUTH_UNIVERSAL_KINDS,
+  AuthCoreErrorSchema,
+  AuthDomainErrorDetailsSchema,
+  AuthErrorDetailsSchema,
+  AuthErrorKindSchema,
+  AuthStorageErrorDetailsSchema,
+  authCoreError,
+} from './auth-error.ts';
+export type { AuthCoreError, AuthErrorDetails, AuthErrorKind } from './auth-error.ts';
+export {
   CREDENTIAL_KINDS,
   CredentialKindSchema,
   CredentialRefSchema,
